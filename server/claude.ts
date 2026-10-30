@@ -97,7 +97,8 @@ export class ClaudeSession implements AgentSession {
         effort: opts.effort === "ultra" ? "max" : opts.effort, // Codex-only level
         resume: opts.resume,
         pathToClaudeCodeExecutable: opts.bin,
-        env: opts.env,
+        // Background shell tasks report back through tools Tack leaves out, so their output would be lost.
+        env: { ...opts.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
         abortController: this.abort,
         includePartialMessages: true,
         systemPrompt: systemPrompt("claude", opts.role),
