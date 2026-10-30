@@ -28,7 +28,7 @@ export function TaskList({ threadId }: { threadId: string }) {
       {open && (
         <ol className="mt-1 mb-0.5 space-y-0.5">
           {todos.map((t, i) => (
-            <li key={i} className="flex min-h-6 items-start gap-2.5 text-[13px] leading-6">
+            <li key={i} className="flex min-h-6 items-start gap-2.5 text-[13.5px] leading-6">
               <span className="flex h-6 w-3.5 shrink-0 items-center justify-center">
                 {t.status === "completed" ? (
                   <Check size={13} className="text-faint" />
