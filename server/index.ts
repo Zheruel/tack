@@ -37,6 +37,13 @@ const bins = {
 const vars: Record<string, string> = { ...(process.env as Record<string, string>), PATH };
 delete vars.TACK_DEV;
 delete vars.TACK_PORT;
+// Started from inside Claude Code (e.g. its desktop terminal)? Its session variables would make our
+// agents load that host's tools and context, so drop them.
+if (vars.CLAUDECODE) {
+  for (const k of Object.keys(vars)) {
+    if (/^(CLAUDE|MCP_|ENABLE_|DISABLE_)/.test(k) || k === "ANTHROPIC_BASE_URL") delete vars[k];
+  }
+}
 
 const store = new Store(dataDir);
 const sockets = new Set<ServerWebSocket<unknown>>();
