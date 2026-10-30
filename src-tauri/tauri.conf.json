@@ -20,7 +20,10 @@
         "minHeight": 480,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 16, "y": 25 },
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 25
+        },
         "backgroundColor": "#1b1917"
       }
     ],
@@ -30,9 +33,30 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
-    "externalBin": ["binaries/tack-server"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
-    "macOS": { "minimumSystemVersion": "14.0" }
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "externalBin": [
+      "binaries/tack-server"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVENDBCMjA3QTQ4RUM5RkQKUldUOXlZNmtCN0pBWFpxb05iUDFIWUk3aEU1dWZFN2d6K2FPYitYazJ4L2s5WkE5dC9oazJSQ2YK",
+      "endpoints": [
+        "https://github.com/Zheruel/tack/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

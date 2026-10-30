@@ -18,6 +18,7 @@ import type {
 } from "../../shared/protocol";
 import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../../shared/protocol";
 import { call, onConnect, onEvent } from "./rpc";
+import type { UpdateItem } from "./updates";
 
 export interface Transcript {
   order: string[];
@@ -46,6 +47,10 @@ interface State {
   unread: Record<string, true>;
   showSettled: boolean;
   clis: Partial<Record<CliName, CliStatus>>;
+  // CLIs that just finished updating, with the version they came from (shown briefly).
+  updatedClis: Partial<Record<CliName, string>>;
+  appUpdate?: UpdateItem;
+  restartPending: boolean;
   // The right-hand panel with branch, PR and context.
   panel: boolean;
 }
@@ -61,6 +66,8 @@ export const useApp = create<State>(() => ({
   unread: load("tack.unread", {}),
   showSettled: false,
   clis: {},
+  updatedClis: {},
+  restartPending: false,
   panel: load("tack.panel", true),
 }));
 
@@ -218,8 +225,15 @@ function apply(e: Event) {
       return set((s) => ({ queues: { ...s.queues, [e.threadId]: e.queue } }));
     case "approval":
       return set((s) => ({ approvals: { ...s.approvals, [e.request.id]: e.request } }));
-    case "cli":
-      return set((s) => ({ clis: { ...s.clis, [e.status.name]: e.status } }));
+    case "cli": {
+      const name = e.status.name;
+      const prev = get().clis[name];
+      if (prev?.state === "updating" && e.status.state === "current") {
+        set((s) => ({ updatedClis: { ...s.updatedClis, [name]: prev.installed } }));
+        setTimeout(() => set(({ updatedClis: { [name]: _, ...rest } }) => ({ updatedClis: rest })), 4000);
+      }
+      return set((s) => ({ clis: { ...s.clis, [name]: e.status } }));
+    }
     case "approval.resolved":
       return set((s) => {
         const { [e.approvalId]: _, ...approvals } = s.approvals;

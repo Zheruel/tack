@@ -1,11 +1,11 @@
 import * as Ctx from "@radix-ui/react-context-menu";
 import { Check, ChevronRight, RotateCcw, SquarePen } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { CliName, CliStatus, Thread } from "../../../shared/protocol";
+import { useState } from "react";
+import type { Thread } from "../../../shared/protocol";
 import { pickFolder } from "../native";
 import { call } from "../rpc";
 import { openThread, setShowSettled, startDraft, useApp } from "../store";
-import { ClaudeLogo, OpenAILogo } from "./Logos";
+import { Updates } from "./Updates";
 
 export async function addProject() {
   const path = await pickFolder();
@@ -223,84 +223,6 @@ function CtxItem({
     >
       {children}
     </Ctx.Item>
-  );
-}
-
-// ---- CLI updates
-
-const CLI_NAMES: Record<CliName, string> = { claude: "Claude Code", codex: "Codex" };
-
-// One quiet row per CLI with a newer release. Click to update; it confirms, then fades away.
-function Updates() {
-  const clis = useApp((s) => s.clis);
-  const [done, setDone] = useState<Partial<Record<CliName, string>>>({});
-  const prev = useRef(clis);
-
-  useEffect(() => {
-    for (const c of Object.values(clis)) {
-      if (prev.current[c.name]?.state === "updating" && c.state === "current") {
-        setDone((d) => ({ ...d, [c.name]: c.installed }));
-        setTimeout(() => setDone(({ [c.name]: _, ...rest }) => rest), 3500);
-      }
-    }
-    prev.current = clis;
-  }, [clis]);
-
-  const shown = Object.values(clis).filter((c) => c.state === "available" || c.state === "updating" || done[c.name]);
-  if (!shown.length) return null;
-  return (
-    <div className="flex shrink-0 flex-col gap-1.5 px-2.5 pt-1 pb-3">
-      {shown.map((c) => (
-        <UpdateCard key={c.name} cli={c} doneVersion={done[c.name]} />
-      ))}
-    </div>
-  );
-}
-
-function UpdateCard({ cli, doneVersion }: { cli: CliStatus; doneVersion?: string }) {
-  const updating = cli.state === "updating";
-  const finished = !!doneVersion && cli.state === "current";
-  const failed = !!cli.error && !updating;
-  const name = CLI_NAMES[cli.name];
-
-  return (
-    <button
-      disabled={updating || finished}
-      onClick={() => call("cli.update", { name: cli.name })}
-      title={failed ? `Update failed: ${cli.error}` : `Update ${name} to ${cli.latest}. Idle chats restart on it.`}
-      className={`update-card group flex w-full items-center gap-2.5 rounded-xl border border-line/70 bg-raised/70 py-2 pr-2 pl-2 text-left transition-colors hover:border-line hover:bg-raised ${
-        finished ? "fade-away" : ""
-      }`}
-    >
-      <span className="relative flex size-8 shrink-0 items-center justify-center rounded-full border border-line/80 bg-canvas">
-        {cli.name === "codex" ? <OpenAILogo className="size-4" /> : <ClaudeLogo className="size-4" />}
-        {updating && (
-          <svg viewBox="0 0 38 38" className="spin absolute -inset-[3px] size-[38px]">
-            <circle cx="19" cy="19" r="18" fill="none" stroke="var(--color-brass)" strokeWidth="1.5" strokeDasharray="28 86" strokeLinecap="round" />
-          </svg>
-        )}
-        {finished && (
-          <span className="pop absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full bg-ok text-canvas ring-2 ring-rail">
-            <Check size={9} strokeWidth={3.5} />
-          </span>
-        )}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] text-ink">{name}</span>
-        <span className={`block truncate text-[11.5px] tabular-nums ${failed ? "text-danger/90" : "text-faint"}`}>
-          {finished ? `Updated to ${doneVersion}` : updating ? "Updating…" : failed ? "Update failed" : `${cli.installed} → ${cli.latest}`}
-        </span>
-      </span>
-      {!updating && !finished && (
-        <span
-          className={`shrink-0 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
-            failed ? "text-danger group-hover:bg-danger/10" : "bg-brass/12 text-brass group-hover:bg-brass/20"
-          }`}
-        >
-          {failed ? "Retry" : "Update"}
-        </span>
-      )}
-    </button>
   );
 }
 

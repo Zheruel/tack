@@ -23,3 +23,19 @@ export function ProviderLogo({ provider, className }: { provider: Provider; clas
 }
 
 export const PROVIDER_NAMES: Record<Provider, string> = { claude: "Claude", codex: "Codex" };
+
+export function TackLogo({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="300 300 424 500" className={`shrink-0 ${className}`} aria-label="Tack">
+      <defs>
+        <linearGradient id="tack-brass" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#e2c27e" />
+          <stop offset="1" stopColor="#a9823f" />
+        </linearGradient>
+      </defs>
+      <ellipse cx="512" cy="390" rx="190" ry="72" fill="url(#tack-brass)" />
+      <ellipse cx="512" cy="372" rx="150" ry="44" fill="#ecd39c" opacity="0.45" />
+      <path d="M478 448 L546 448 L520 760 Q512 790 504 760 Z" fill="url(#tack-brass)" />
+    </svg>
+  );
+}

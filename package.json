@@ -9,7 +9,8 @@
     "build": "bun run build:server && tauri build",
     "build:web": "vite build",
     "build:server": "bun scripts/build-sidecar.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release": "bun scripts/release.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.314",
@@ -23,6 +24,8 @@
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-opener": "^2.7.2",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "lucide-react": "^1.65.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
