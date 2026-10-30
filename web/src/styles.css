@@ -1,0 +1,268 @@
+@import "tailwindcss";
+@import "@fontsource-variable/hanken-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
+@import "streamdown/styles.css";
+
+/* Dark only: `dark:` variants always apply. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@source "../../node_modules/streamdown/dist/*.js";
+@source "../../node_modules/@streamdown/code/dist/*.js";
+
+/* One theme: warm charcoal like oiled leather, brass for the few things that matter. */
+@theme {
+  --color-canvas: #1b1917;
+  --color-rail: #161412;
+  --color-raised: #24211e;
+  --color-hover: #2b2724;
+  --color-line: #322d29;
+  --color-ink: #ece6dd;
+  --color-dim: #a69d92;
+  --color-faint: #70685f;
+  --color-brass: #c9a35b;
+  --color-brass-ink: #1b1917;
+  --color-danger: #e0796b;
+  --color-ok: #8fb38a;
+
+  /* shadcn-style names Streamdown's classes use. */
+  --color-background: var(--color-canvas);
+  --color-foreground: var(--color-ink);
+  --color-card: var(--color-raised);
+  --color-card-foreground: var(--color-ink);
+  --color-muted: var(--color-raised);
+  --color-muted-foreground: var(--color-dim);
+  --color-border: var(--color-line);
+  --color-input: var(--color-line);
+  --color-primary: var(--color-ink);
+  --color-primary-foreground: var(--color-canvas);
+  --color-sidebar: var(--color-rail);
+
+  --font-sans: "Hanken Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+}
+
+/* Tokens Streamdown's components read. */
+:root {
+  color-scheme: dark;
+  --background: var(--color-canvas);
+  --foreground: var(--color-ink);
+  --card: var(--color-raised);
+  --card-foreground: var(--color-ink);
+  --muted: var(--color-raised);
+  --muted-foreground: var(--color-dim);
+  --border: var(--color-line);
+  --input: var(--color-line);
+  --primary: var(--color-ink);
+  --primary-foreground: var(--color-canvas);
+  --radius: 0.625rem;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+/* Selectable content: the transcript and inputs. */
+.selectable,
+textarea,
+input {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-brass) 35%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-brass) 70%, transparent);
+  outline-offset: 2px;
+}
+
+textarea:focus-visible {
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 10px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Assistant prose. */
+.prose-tack {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+.prose-tack :where(p, ul, ol, pre, blockquote, table) {
+  margin: 0 0 0.85em;
+}
+.prose-tack > :last-child {
+  margin-bottom: 0;
+}
+.prose-tack :where(h1, h2, h3, h4) {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.3em 0 0.5em;
+}
+.prose-tack h1 {
+  font-size: 1.35em;
+}
+.prose-tack h2 {
+  font-size: 1.2em;
+}
+.prose-tack h3 {
+  font-size: 1.05em;
+}
+.prose-tack :where(ul, ol) {
+  padding-left: 1.4em;
+}
+.prose-tack ul {
+  list-style: disc;
+}
+.prose-tack ol {
+  list-style: decimal;
+}
+.prose-tack li {
+  margin: 0.2em 0;
+}
+.prose-tack li::marker {
+  color: var(--color-faint);
+}
+.prose-tack a {
+  color: var(--color-brass);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--color-brass) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.prose-tack :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-raised);
+  border: 1px solid var(--color-line);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+.prose-tack pre,
+.prose-tack pre code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.prose-tack blockquote {
+  border-left: 2px solid var(--color-line);
+  padding-left: 1em;
+  color: var(--color-dim);
+}
+.prose-tack hr {
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  margin: 1.5em 0;
+}
+/* Code blocks: one quiet frame, language label top-left, copy button on hover. */
+.prose-tack [data-streamdown="code-block"] {
+  margin: 14px 0;
+  padding: 0;
+  gap: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-rail);
+}
+.prose-tack [data-streamdown="code-block-header"] {
+  height: 30px;
+  padding: 0 14px;
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--color-faint);
+  border-bottom: 1px solid color-mix(in oklab, var(--color-line) 60%, transparent);
+}
+.prose-tack [data-streamdown="code-block-header"]:has(span:empty) {
+  display: none;
+}
+.prose-tack [data-streamdown="code-block"] > .absolute {
+  top: 4px;
+  right: 6px;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.prose-tack [data-streamdown="code-block"]:hover > .absolute {
+  opacity: 1;
+}
+.prose-tack [data-streamdown="code-block"] > .absolute > div {
+  border: 0;
+  background: transparent;
+}
+.prose-tack [data-streamdown="code-block-body"] {
+  border: 0;
+  border-radius: 0 0 12px 12px;
+  background: transparent;
+  padding: 12px 16px;
+}
+
+/* Tables: a single hairline frame. */
+.prose-tack [data-streamdown="table-wrapper"] {
+  margin: 14px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.prose-tack [data-streamdown="table-wrapper"] > div:has(> table) {
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: transparent;
+}
+.prose-tack table {
+  font-size: 0.92em;
+}
+.prose-tack :where(th, td) {
+  padding: 0.5em 0.9em;
+  text-align: left;
+}
+.prose-tack th {
+  font-weight: 600;
+  background: var(--color-rail);
+}
+
+/* Running indicator: a slow brass pulse. */
+@keyframes tack-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.pulse {
+  animation: tack-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}

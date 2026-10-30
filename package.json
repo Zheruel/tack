@@ -1,0 +1,45 @@
+{
+  "name": "tack",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run build:server && tauri dev",
+    "dev:web": "vite",
+    "dev:server": "bun --watch server/index.ts",
+    "build": "bun run build:server && tauri build",
+    "build:web": "vite build",
+    "build:server": "bun scripts/build-sidecar.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.314",
+    "@fontsource-variable/hanken-grotesk": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@radix-ui/react-dropdown-menu": "^2.2.1",
+    "@streamdown/code": "^2.0.0",
+    "@tanstack/react-virtual": "^3.14.24",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "lucide-react": "^1.65.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "streamdown": "^2.7.1",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@babel/core": "^8.0.10",
+    "@rolldown/plugin-babel": "^0.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/babel__core": "^7.20.5",
+    "@types/bun": "^1.4.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
