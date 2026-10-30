@@ -51,8 +51,6 @@ interface State {
   updatedClis: Partial<Record<CliName, string>>;
   appUpdate?: UpdateItem;
   restartPending: boolean;
-  // The right-hand panel with branch, PR and context.
-  panel: boolean;
 }
 
 export const useApp = create<State>(() => ({
@@ -68,7 +66,6 @@ export const useApp = create<State>(() => ({
   clis: {},
   updatedClis: {},
   restartPending: false,
-  panel: load("tack.panel", true),
 }));
 
 const set = useApp.setState;
@@ -159,11 +156,6 @@ export function setShowSettled(show: boolean) {
   set({ showSettled: show });
 }
 
-export function togglePanel() {
-  const panel = !get().panel;
-  save("tack.panel", panel);
-  set({ panel });
-}
 
 // ---- server sync
 
