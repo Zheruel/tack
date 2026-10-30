@@ -85,7 +85,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
           Skip
         </button>
       </div>
-      <p className="mb-2 text-[14.5px] leading-snug text-ink">{q.question}</p>
+      <p className="mb-2 text-[14px] leading-snug text-ink">{q.question}</p>
       <div className="space-y-0.5">
         {q.options.map((o, i) => {
           const on = picks[index]!.includes(o.label);
@@ -105,7 +105,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
                 {on && q.multiSelect ? <Check size={11} /> : i + 1}
               </span>
               <span className="min-w-0">
-                <span className={`block text-[13.5px] leading-5 ${on ? "text-ink" : "text-ink/90"}`}>{o.label}</span>
+                <span className={`block text-[13px] leading-5 ${on ? "text-ink" : "text-ink/90"}`}>{o.label}</span>
                 {o.description && <span className="block text-[12.5px] leading-snug text-faint">{o.description}</span>}
               </span>
             </button>
@@ -122,7 +122,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
             if (!q.multiSelect && v) setPicks((p) => p.map((x, i) => (i === index ? [] : x)));
           }}
           placeholder="Or type your own answer"
-          className="h-8 min-w-0 flex-1 rounded-lg bg-transparent text-[13.5px] text-ink outline-none placeholder:text-faint"
+          className="h-8 min-w-0 flex-1 rounded-lg bg-transparent text-[13px] text-ink outline-none placeholder:text-faint"
         />
         {(q.multiSelect || typed[index]) && (
           <button

@@ -30,7 +30,7 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
     }
     case "error":
       return (
-        <div className="selectable my-3 rounded-xl border border-danger/25 bg-danger/[0.06] px-4 py-3 text-[13.5px] leading-relaxed text-danger">
+        <div className="selectable my-3 rounded-xl border border-danger/25 bg-danger/[0.06] px-4 py-3 text-[13px] leading-relaxed text-danger">
           {item.text}
         </div>
       );
@@ -92,14 +92,14 @@ function UserMessage({ item }: { item: Of<"user"> }) {
           </div>
         )}
         {command ? (
-          <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">
+          <p className="selectable text-[14px] leading-[1.55] whitespace-pre-wrap text-ink">
             <span className="mr-1.5 inline-flex items-center rounded-md bg-brass/15 px-1.5 py-px align-[1px] font-mono text-[12.5px] text-brass">
               /{command[1]}
             </span>
             {command[2]}
           </p>
         ) : (
-          <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">
+          <p className="selectable text-[14px] leading-[1.55] whitespace-pre-wrap text-ink">
             {withMentions(item.text)}
           </p>
         )}
@@ -151,7 +151,7 @@ export function Steps({ threadId, ids, live }: { threadId: string; ids: string[]
     <div className="py-1">
       <button
         onClick={() => setOpen(!open)}
-        className="group flex h-7 max-w-full items-center gap-2 text-left text-[13.5px] text-dim hover:text-ink"
+        className="group flex h-7 max-w-full items-center gap-2 text-left text-[13px] text-dim hover:text-ink"
       >
         <Dot state={current ? "running" : failed ? "error" : "done"} />
         <span className="shrink-0">{heading.verb}</span>
@@ -207,7 +207,7 @@ function ToolLine({ tool, live }: { tool: Tool; live: boolean }) {
     <div>
       <button
         onClick={() => setOpen(!open)}
-        className="group flex h-7 max-w-full items-center gap-2 text-left text-[13.5px] text-dim hover:text-ink"
+        className="group flex h-7 max-w-full items-center gap-2 text-left text-[13px] text-dim hover:text-ink"
       >
         <Dot state={tool.status === "running" || live ? "running" : tool.status === "error" ? "error" : "done"} />
         <span className="shrink-0">{verb}</span>

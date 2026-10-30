@@ -33,7 +33,7 @@ export function App() {
           <div data-tauri-drag-region className="flex flex-1 flex-col items-center justify-center gap-5">
             {ready && !hasProjects && (
               <>
-                <p className="text-[15px] text-dim">Add a project folder to start.</p>
+                <p className="text-[14px] text-dim">Add a project folder to start.</p>
                 <button
                   onClick={addProject}
                   className="flex items-center gap-2 rounded-xl bg-brass px-4 py-2 text-[14px] font-medium text-brass-ink hover:brightness-110"
@@ -122,13 +122,13 @@ function Header({ threadId }: { threadId: string }) {
             if (e.key === "Enter") rename(e.currentTarget.value);
             if (e.key === "Escape") setEditing(false);
           }}
-          className="min-w-0 flex-1 bg-transparent text-[13.5px] font-medium text-ink outline-none"
+          className="min-w-0 flex-1 bg-transparent text-[13px] font-medium text-ink outline-none"
         />
       ) : (
         <h1
           onDoubleClick={() => setEditing(true)}
           title="Double-click to rename"
-          className="min-w-0 truncate text-[13.5px] font-medium text-ink"
+          className="min-w-0 truncate text-[13px] font-medium text-ink"
         >
           {thread.title}
         </h1>

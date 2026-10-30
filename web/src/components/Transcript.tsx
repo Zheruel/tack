@@ -152,7 +152,7 @@ function Working({ threadId }: { threadId: string }) {
   });
   if (!idle) return null;
   return (
-    <div className="flex h-9 items-center gap-2.5 text-[13.5px] text-faint">
+    <div className="flex h-9 items-center gap-2.5 text-[13px] text-faint">
       <span className="pulse size-1.5 rounded-full bg-brass" />
       Thinking
     </div>

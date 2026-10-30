@@ -166,7 +166,7 @@ export function Composer({ threadId }: { threadId?: string }) {
             }
           }}
           placeholder={running ? "Queue a follow-up. ⌘↵ sends it now" : threadId ? "Reply" : "What should we work on?"}
-          className="block max-h-[360px] min-h-[52px] w-full resize-none bg-transparent px-[18px] pt-4 pb-1 text-[15px] leading-[1.6] text-ink placeholder:text-faint focus:outline-none"
+          className="block max-h-[360px] min-h-[52px] w-full resize-none bg-transparent px-[18px] pt-4 pb-1 text-[14px] leading-[1.6] text-ink placeholder:text-faint focus:outline-none"
         />
         <div className="flex items-center gap-0.5 px-2.5 pb-2.5">
           <button
@@ -221,7 +221,7 @@ function Queue({ threadId }: { threadId: string }) {
   return (
     <div className="mb-2 flex flex-col gap-1.5">
       {queue.map((q) => (
-        <div key={q.id} className="flex items-center gap-3 rounded-2xl border border-line/80 bg-canvas px-4 py-2.5 text-[13.5px]">
+        <div key={q.id} className="flex items-center gap-3 rounded-2xl border border-line/80 bg-canvas px-4 py-2.5 text-[13px]">
           <span className="shrink-0 text-[12px] text-faint">Queued</span>
           <span className="min-w-0 flex-1 truncate text-dim">{q.text || `${q.attachments.length} attachment(s)`}</span>
           <button
