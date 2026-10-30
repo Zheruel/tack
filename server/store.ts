@@ -51,6 +51,8 @@ export class Store {
     if (!cols.includes("context")) this.db.run("ALTER TABLE threads ADD COLUMN context TEXT");
     if (!cols.includes("todos")) this.db.run("ALTER TABLE threads ADD COLUMN todos TEXT");
     if (!cols.includes("questions")) this.db.run("ALTER TABLE threads ADD COLUMN questions TEXT");
+    // Sub-agent threads point at the thread whose agent started them.
+    if (!cols.includes("parent_id")) this.db.run("ALTER TABLE threads ADD COLUMN parent_id TEXT");
     // "default" was an alias for Opus; threads now name the model explicitly.
     this.db.run("UPDATE threads SET model = 'opus' WHERE model = 'default'");
     this.db.run("PRAGMA foreign_keys = ON");
@@ -94,26 +96,27 @@ export class Store {
     return r ? toThread(r) : undefined;
   }
 
-  createThread(projectId: string, provider: Provider, model: string, effort: Effort): Thread {
+  createThread(projectId: string, provider: Provider, model: string, effort: Effort, child?: { parentId: string; title: string; access: Access }): Thread {
     const now = Date.now();
     const t: Thread = {
       id: crypto.randomUUID(),
       projectId,
-      title: "New thread",
+      title: child?.title ?? "New thread",
       provider,
       model,
       effort,
-      access: "full",
+      access: child?.access ?? "full",
       status: "idle",
+      parentId: child?.parentId,
       settled: false,
       createdAt: now,
       updatedAt: now,
     };
     this.db
       .query(
-        "INSERT INTO threads (id, project_id, title, provider, model, effort, access, session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        "INSERT INTO threads (id, project_id, title, provider, model, effort, access, session_id, created_at, updated_at, parent_id) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
       )
-      .run(t.id, projectId, t.title, t.provider, t.model, t.effort, t.access, now, now);
+      .run(t.id, projectId, t.title, t.provider, t.model, t.effort, t.access, now, now, t.parentId ?? null);
     return t;
   }
 
@@ -199,6 +202,7 @@ function toThread(r: any): Thread {
     context: r.context ? JSON.parse(r.context) : undefined,
     todos: r.todos ? JSON.parse(r.todos) : undefined,
     questions: r.questions ? JSON.parse(r.questions) : undefined,
+    parentId: r.parent_id ?? undefined,
     settled: r.settled === null ? Date.now() - r.updated_at > AUTO_SETTLE_MS : r.settled === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

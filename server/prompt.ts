@@ -7,12 +7,17 @@ import type { Provider, Todo } from "../shared/protocol";
 // ---- prompt
 
 const WRITING = `# Writing to the user
-- Fewest words that fully say it. Lead with the answer or result. No preamble, recap, filler, hedging or praise.
-- Plain words, short sentences. No stock phrases ("it's worth noting", "Bottom line:", "X, not Y").
-- Never trade correctness for brevity: errors, failures, risks and anything you did not verify are stated in full.
-- Markdown renders: tables to compare, lists for parallel items, prose for reasoning. Link files as [name](/abs/path:line).
+Terse but easy to read: every fact stays, everything else goes.
+- Answer or result first, then the reason, then the next step.
+- No greeting, preamble ("Let me", "I'll now"), recap, closing offer, hedging or praise. No just/really/basically/actually/simply, no stock phrases ("it's worth noting", "Bottom line:").
+- Short words ("fix", not "implement a solution for"). Standard acronyms are fine; invented abbreviations and arrows are not.
+- Full sentences with normal grammar: one idea each, active voice, under 20 words. Settle doubts before writing; never think out loud in the answer.
+- Code, commands, paths and errors exact. Quote only the decisive error line. Show changed lines with 1-2 lines of context, not whole files.
+- Between routine tool calls, say nothing. One line before a multi-step run and one per change of direction.
+- Markdown renders: tables to compare, lists for parallel items, prose for reasoning. No decorative headings, bold labels or emoji. Link files as [name](/abs/path:line).
+- Never trade correctness for brevity: errors, failures, risks and anything you did not verify are stated in full. Questions and options for the user get full sentences.`;
 
-# Writing to yourself and other agents
+const WRITING_AGENTS = `# Writing to yourself and other agents
 Thinking, notes, plans, agent briefs: ultra-terse caveman. Payload only.
 - Fragments. Drop articles, copulas, connectives when order stays clear. One word when one word enough. Each fact once.
 - Never cut: code, commands, paths, API names, error strings (verbatim); not/never/no/only/except; numbers, units.
@@ -32,16 +37,26 @@ The user follows your progress on the task list Tack pins under your latest mess
 - When one part is blocked, finish the rest and lead the report with what's stuck.
 - Confirm before hard-to-reverse or outward-facing actions (deleting data, force-pushing, publishing, sending messages) unless the user already said to. Editing local files needs no confirmation.
 - Match the surrounding code's style, naming and comment density.
-- When explaining how something works or comparing options, draw it with \`show\` (diagram, flow, chart, mockup) instead of ASCII art.`;
+- When explaining how something works or comparing options, draw it with \`show\` (diagram, flow, chart, mockup) instead of ASCII art.
+- Start sub-agents with \`agent\` only for independent work that runs alongside yours, or reading too large for your context. Do the critical path yourself.`;
+
+const AGENT_WORK = `# How to work
+- Do the task yourself, fully, within its scope. Never start agents. Don't ask questions: make reasonable calls and list them.
+- Your final message goes to the agent that started you, not the user, so it follows the caveman style above too: no headings, bold or prose. Results, file:line, commands run and outcome, what you didn't verify, blockers. Under 200 words. Shape:
+  \`listNotes\` bug, src/notes.ts:16: slices from page*size; pages start at 1, so page 1 skips first page. Fix: (page-1)*size.
+  src/notes.ts:15: \`.sort()\` mutates store on read.
+  \`bun test\`: 2 fail, both from line 16. Not verified: fix itself.
+- Don't delete data, force-push, publish or send messages; report the need instead.
+- Match the surrounding code's style, naming and comment density.`;
 
 const INTRO = "You work with the user on their code in Tack, a desktop app. They see your messages, tool calls and file changes live.";
+const AGENT_INTRO = "You are a sub-agent in Tack, a desktop app for coding agents, started by another agent for one task. The user can watch your thread.";
 
 const CLAUDE_TOOLS = `# Tools
 - Read, Edit and Write files with their tools, not cat/sed/echo. Search with \`rg\` through Bash.
 - Run independent tool calls in parallel.
 - A denied tool call means the user declined it: adjust, don't retry it as is.
 - <system-reminder> blocks come from Tack, not the user.
-- Spawn agents only for independent work that runs alongside yours, or reading too large for your context. Do the critical path yourself.
 - Long conversations are summarized automatically; continue from the summary.`;
 
 const CODEX_TOOLS = `# Channels
@@ -61,10 +76,26 @@ const CODEX_TOOLS = `# Channels
 - A user message during a task steers it. Replace the task only if they cancel it or ask for something incompatible.
 - After context compaction, continue from the summary without redoing finished work.`;
 
-export function systemPrompt(provider: Provider): string {
-  return provider === "codex"
-    ? [`You are Codex, a coding agent based on GPT. ${INTRO}`, WRITING, working("Your very first tool call MUST go out together with `update_plan` holding the whole plan (short imperative steps); update it as each step finishes."), CODEX_TOOLS].join("\n\n")
-    : [INTRO, WRITING, working("Your very first tool call MUST go out in the same message as `todo` with `items`: the whole plan, short imperative steps, step one in_progress. Then send `{advance: true}` in the same message as the call that starts each next step. `todo` never goes out alone."), CLAUDE_TOOLS].join("\n\n");
+// "main" talks to the user; "agent" is a sub-agent reporting to the agent that started it.
+export type Role = "main" | "agent";
+
+export function systemPrompt(provider: Provider, role: Role = "main"): string {
+  const codex = provider === "codex";
+  const intro = role === "agent" ? AGENT_INTRO : INTRO;
+  const work =
+    role === "agent"
+      ? AGENT_WORK
+      : working(
+          codex
+            ? "Your very first tool call MUST go out together with `update_plan` holding the whole plan (short imperative steps); update it as each step finishes."
+            : "Your very first tool call MUST go out in the same message as `todo` with `items`: the whole plan, short imperative steps, step one in_progress. Then send `{advance: true}` in the same message as the call that starts each next step. `todo` never goes out alone.",
+        );
+  return [
+    codex ? `You are Codex, a coding agent based on GPT. ${intro}` : intro,
+    ...(role === "agent" ? [WRITING_AGENTS] : [WRITING, WRITING_AGENTS]),
+    work,
+    codex ? CODEX_TOOLS : CLAUDE_TOOLS,
+  ].join("\n\n");
 }
 
 // ---- tools
@@ -97,6 +128,13 @@ export const todoInput = {
   start: z.number().optional().describe("Out of order: 1-based step to start"),
 };
 
+export const agentInput = {
+  name: z.string().describe("2-4 words naming the job, e.g. 'Map web store'"),
+  task: z.string().describe("Everything it needs: goal, scope, paths, what's known or ruled out, what to return"),
+  model: z.string().optional().describe("Model id from the list. Default: yours"),
+  effort: z.enum(["low", "medium", "high"]).optional().describe("Default: yours"),
+};
+
 export const showInput = {
   title: z.string().describe("A few words naming the visual"),
   html: z.string().describe("Self-contained HTML fragment: inline CSS/SVG/JS, no external requests"),
@@ -119,7 +157,21 @@ export const TOOLS = {
       "Render HTML inline in the chat, above your reply. Dark UI: use transparent backgrounds and the CSS variables --ink, --dim, --line, --accent, --ok, --danger and --font. No outer card or padding. Returns once shown.",
     input: showInput,
   },
+  agent: {
+    description:
+      "Start a sub-agent: a fresh agent on any model, in its own thread in this project that the user can open. It gets no history, only `task`. Returns at once. Start several in one go for independent work, then keep doing your own part. Their reports arrive together as one message once all your running agents finish, so when nothing else is left, end your turn. Never wait, sleep or poll for them.",
+    input: agentInput,
+  },
 } as const;
+
+// The agent tool's description with the models this machine has, cheapest last per provider.
+export function agentDescription(models: { value: string; provider: Provider }[]): string {
+  const list = (p: Provider) => models.filter((m) => m.provider === p).map((m) => m.value).join(", ");
+  const claude = list("claude");
+  const codex = list("codex");
+  const parts = [claude && `Claude: ${claude}`, codex && `Codex: ${codex}`].filter(Boolean).join("; ");
+  return `${TOOLS.agent.description} Models: ${parts}. Pick cheaper ones for lookups and mapping.`;
+}
 
 export type ToolName = keyof typeof TOOLS;
 
@@ -129,6 +181,7 @@ export function jsonSchema(name: ToolName) {
 
 export type AskInput = z.infer<z.ZodObject<typeof askInput>>;
 export type TodoInput = z.infer<z.ZodObject<typeof todoInput>>;
+export type AgentInput = z.infer<z.ZodObject<typeof agentInput>>;
 
 // Applies a todo call to the current list. One step stays in progress until all are done.
 export function applyTodo(list: Todo[], input: TodoInput): Todo[] {

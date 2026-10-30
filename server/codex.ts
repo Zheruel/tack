@@ -2,7 +2,7 @@
 // (one bare JSON object per line, no "jsonrpc" field). Maps thread items onto Tack items.
 
 import type { Attachment, Command, Effort, Item, ModelOption, Todo } from "../shared/protocol";
-import { ASKED, jsonSchema, systemPrompt, TOOLS, type AskInput } from "./prompt";
+import { agentDescription, ASKED, jsonSchema, systemPrompt, TOOLS, type AgentInput, type AskInput } from "./prompt";
 import type { AgentSession, SessionEvents, SessionOptions } from "./session";
 
 type Json = any;
@@ -49,12 +49,15 @@ const KEPT_PLUGINS = new Set([
   "linear@openai-curated-remote",
 ]);
 
-const DYNAMIC_TOOLS = (["ask", "show"] as const).map((name) => ({
-  type: "function",
-  name,
-  description: TOOLS[name].description,
-  inputSchema: jsonSchema(name),
-}));
+// Tack's tools for a Codex thread. A sub-agent gets neither ask nor agent.
+function dynamicTools(opts: SessionOptions) {
+  const tool = (name: "ask" | "show" | "agent", description: string) => ({ type: "function", name, description, inputSchema: jsonSchema(name) });
+  return [
+    ...(opts.role === "agent" ? [] : [tool("ask", TOOLS.ask.description)]),
+    tool("show", TOOLS.show.description),
+    ...(opts.agentModels?.length ? [tool("agent", agentDescription(opts.agentModels))] : []),
+  ];
+}
 
 class Rpc {
   private proc: ReturnType<typeof Bun.spawn>;
@@ -255,7 +258,7 @@ export class CodexSession implements AgentSession {
 
   private startThread(): Promise<string> {
     const { approvalPolicy, sandbox } = this.policy();
-    const base = { cwd: this.opts.cwd, model: this.model, approvalPolicy, sandbox, baseInstructions: systemPrompt("codex") };
+    const base = { cwd: this.opts.cwd, model: this.model, approvalPolicy, sandbox, baseInstructions: systemPrompt("codex", this.opts.role) };
     return (this.thread ??= (async () => {
       await this.init;
       let result: Json;
@@ -265,7 +268,7 @@ export class CodexSession implements AgentSession {
           .catch(() => undefined);
       }
       // Dynamic tools are stored with the thread, so only a new thread declares them.
-      result ??= await this.rpc.request("thread/start", { ...base, dynamicTools: DYNAMIC_TOOLS });
+      result ??= await this.rpc.request("thread/start", { ...base, dynamicTools: dynamicTools(this.opts) });
       this.events.sessionId(result.thread.id);
       return result.thread.id as string;
     })());
@@ -396,6 +399,7 @@ export class CodexSession implements AgentSession {
           return text(ASKED);
         }
         if (p.tool === "show") return text("Shown to the user above your reply.");
+        if (p.tool === "agent") return text(this.events.agent(p.arguments as AgentInput));
         return { contentItems: [{ type: "inputText", text: `Unknown tool ${p.tool}` }], success: false };
       }
       default:

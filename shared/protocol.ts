@@ -27,6 +27,8 @@ export interface Thread {
   todos?: Todo[];
   // Questions the agent asked and is waiting on; answering sends them as the next message.
   questions?: Question[];
+  // A sub-agent's thread: the thread whose agent started it.
+  parentId?: string;
   // Set by hand, or automatically after a few idle days. Sending a message unsettles it.
   settled: boolean;
   createdAt: number;
@@ -64,7 +66,8 @@ export type Attachment = ImageAttachment | PathAttachment;
 
 // Provider-neutral transcript items. The UI never branches on provider.
 export type Item =
-  | { id: string; kind: "user"; text: string; attachments?: { name: string; image: boolean }[]; ts: number }
+  // `agents`: not typed by the user but sub-agents' reports, delivered by Tack.
+  | { id: string; kind: "user"; text: string; attachments?: { name: string; image: boolean }[]; agents?: boolean; ts: number }
   | { id: string; kind: "assistant"; text: string; ts: number }
   | { id: string; kind: "thinking"; text: string; ts: number }
   | {
@@ -85,6 +88,7 @@ export interface Queued {
   id: string;
   text: string;
   attachments: Attachment[];
+  agents?: boolean; // sub-agents' reports
 }
 
 export interface ApprovalRequest {

@@ -1,6 +1,7 @@
 // What the hub needs from an agent backend. Claude and Codex both implement it.
 
 import type { Access, Attachment, Command, Effort, Item, ModelOption, Provider, Question, Todo } from "../shared/protocol";
+import type { AgentInput, Role } from "./prompt";
 
 export interface SessionEvents {
   // `final` items are complete and safe to persist; others are still streaming.
@@ -14,6 +15,8 @@ export interface SessionEvents {
   // The agent asked; the answers arrive later as a user message.
   ask(questions: Question[]): void;
   todo(todos: Todo[]): void;
+  // Starts a sub-agent; returns what the calling agent is told.
+  agent(input: AgentInput): string;
 }
 
 export interface SessionOptions {
@@ -26,6 +29,9 @@ export interface SessionOptions {
   env: Record<string, string>;
   // Skills the agent may see; omitted means all of them.
   skills?: string[];
+  role?: Role; // default "main"
+  // Models a main agent may start sub-agents on; none means no `agent` tool.
+  agentModels?: { value: string; provider: Provider }[];
 }
 
 export interface AgentSession {
@@ -49,4 +55,5 @@ export const noEvents: SessionEvents = {
   approve: async () => false,
   ask() {},
   todo() {},
+  agent: () => "Sub-agents are not available here.",
 };

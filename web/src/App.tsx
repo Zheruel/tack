@@ -1,5 +1,5 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, FolderPlus } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Composer, MenuContent, MenuItem } from "./components/Composer";
 import { ChangesTile } from "./components/ChangesTile";
@@ -7,7 +7,7 @@ import { addProject, Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { openExternal } from "./native";
 import { call } from "./rpc";
-import { startDraft, updateDraft, useApp } from "./store";
+import { openThread, startDraft, updateDraft, useApp } from "./store";
 
 export function App() {
   const ready = useApp((s) => s.ready);
@@ -104,6 +104,7 @@ function ProjectPicker() {
 function Header({ threadId }: { threadId: string }) {
   const thread = useApp((s) => s.threads[threadId])!;
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
+  const parent = useApp((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
   const [editing, setEditing] = useState(false);
 
   const rename = (title: string) => {
@@ -113,6 +114,16 @@ function Header({ threadId }: { threadId: string }) {
 
   return (
     <header data-tauri-drag-region className="flex h-[46px] shrink-0 items-center gap-2.5 px-6">
+      {parent && (
+        <button
+          onClick={() => openThread(parent.id)}
+          title="Back to the thread that started this agent"
+          className="flex min-w-0 max-w-[40%] shrink items-center gap-1.5 text-[13.5px] text-faint hover:text-dim"
+        >
+          <span className="truncate">{parent.title}</span>
+          <ChevronRight size={13} className="shrink-0" />
+        </button>
+      )}
       {editing ? (
         <input
           autoFocus

@@ -1,16 +1,19 @@
 // Transcript views for the tools Tack gives every agent: `show` draws a visual inline, `ask`
-// leaves a record of what was asked and answered. `todo` lives in the task list, not here.
+// leaves a record of what was asked and answered, `agent` is a card for the sub-agent it started.
+// `todo` lives in the task list, not here.
 
-import { Maximize2, X } from "lucide-react";
+import { Check, ChevronRight, Maximize2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Item, Question } from "../../../shared/protocol";
+import { openThread, useApp } from "../store";
+import { ProviderLogo } from "./Logos";
 
 type Tool = Extract<Item, { kind: "tool" }>;
 
 // Claude sees them as mcp__tack__<name>, Codex by their plain name.
-export function tackTool(name: string): "ask" | "todo" | "show" | undefined {
+export function tackTool(name: string): "ask" | "todo" | "show" | "agent" | undefined {
   const bare = name.replace(/^mcp__tack__/, "");
-  return bare === "ask" || bare === "todo" || bare === "show" ? bare : undefined;
+  return bare === "ask" || bare === "todo" || bare === "show" || bare === "agent" ? bare : undefined;
 }
 
 // ---- show
@@ -109,5 +112,61 @@ export function Asked({ tool }: { tool: Tool }) {
         </p>
       ))}
     </div>
+  );
+}
+
+// ---- agent
+
+// One row per sub-agent: who, on what, how far along. Opens its thread.
+export function AgentCard({ tool, threadId }: { tool: Tool; threadId: string }) {
+  const input = (tool.input ?? {}) as { name?: string; task?: string; model?: string };
+  const title = tool.output?.match(/^Started "(.+?)"/)?.[1];
+  const child = useApp((s) => (title ? Object.values(s.threads).find((t) => t.parentId === threadId && t.title === title) : undefined));
+  const label = useApp((s) => s.models.find((m) => m.value === child?.model)?.label ?? child?.model);
+  const approval = useApp((s) => !!child && Object.values(s.approvals).some((a) => a.threadId === child.id));
+
+  if (tool.output && !title) {
+    return <p className="my-2 text-[13px] text-faint">Agent not started: {tool.output.replace(/^Not started: /, "")}</p>;
+  }
+  const todos = child?.todos ?? [];
+  const done = todos.filter((t) => t.status === "completed").length;
+  const state = !child
+    ? "starting"
+    : approval || child.questions?.length
+      ? "waiting"
+      : child.status === "running"
+        ? "running"
+        : child.status === "error"
+          ? "failed"
+          : "done";
+
+  return (
+    <button
+      disabled={!child}
+      onClick={() => child && openThread(child.id)}
+      title={input.task}
+      className="group my-1.5 flex w-full items-center gap-3 rounded-xl border border-line/70 px-3.5 py-2 text-left transition-colors enabled:hover:bg-hover/50"
+    >
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {state === "running" || state === "starting" ? (
+          <span className="spin size-3 rounded-full border-[1.5px] border-line border-t-brass" />
+        ) : state === "done" ? (
+          <Check size={14} className="text-ok/80" />
+        ) : state === "failed" ? (
+          <X size={14} className="text-danger" />
+        ) : (
+          <span className="pulse size-2 rounded-full bg-brass" />
+        )}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[13.5px] text-ink">{child?.title ?? input.name ?? "Agent"}</span>
+      <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-faint">
+        {state === "waiting" && <span className="text-brass">Needs you</span>}
+        {state === "failed" && <span className="text-danger">Failed</span>}
+        {todos.length > 0 && state === "running" && <span className="tabular-nums">{done}/{todos.length}</span>}
+        {child && <ProviderLogo provider={child.provider} className="size-3" />}
+        {label ?? input.model}
+        <ChevronRight size={13} className="opacity-0 transition-opacity group-hover:opacity-100" />
+      </span>
+    </button>
   );
 }

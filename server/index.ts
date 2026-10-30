@@ -101,9 +101,12 @@ const handlers: Handlers = {
     return null;
   },
   "thread.delete": ({ threadId }) => {
-    hub.closeThread(threadId);
-    store.deleteThread(threadId);
-    broadcast({ type: "thread.removed", threadId });
+    // A thread's sub-agents go with it.
+    for (const id of [threadId, ...store.threads().filter((t) => t.parentId === threadId).map((t) => t.id)]) {
+      hub.closeThread(id);
+      store.deleteThread(id);
+      broadcast({ type: "thread.removed", threadId: id });
+    }
     return null;
   },
   "thread.open": ({ threadId }) => hub.open(threadId),

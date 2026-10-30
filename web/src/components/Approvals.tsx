@@ -6,8 +6,11 @@ import { useApp } from "../store";
 // Docked on top of the composer. One request at a time: ↵ allows, Esc denies.
 export function Approval({ threadId }: { threadId: string }) {
   const all = useApp((s) => s.approvals);
-  const queue = Object.values(all).filter((a) => a.threadId === threadId);
+  const threads = useApp((s) => s.threads);
+  // A sub-agent's requests show in its parent too, where the user is likely looking.
+  const queue = Object.values(all).filter((a) => a.threadId === threadId || threads[a.threadId]?.parentId === threadId);
   const request = queue[0];
+  const via = request && request.threadId !== threadId ? threads[request.threadId]?.title : undefined;
 
   useEffect(() => {
     if (!request) return;
@@ -25,7 +28,9 @@ export function Approval({ threadId }: { threadId: string }) {
   }, [request?.id]);
 
   if (!request) return null;
-  const { title, body, note } = describe(request);
+  const described = describe(request);
+  const { body, note } = described;
+  const title = via ? `${via}: ${described.title}` : described.title;
 
   return (
     <div className="dock-in mb-2 flex items-center gap-3 rounded-2xl border border-brass/25 bg-raised py-2 pr-2 pl-4">

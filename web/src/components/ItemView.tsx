@@ -6,7 +6,7 @@ import { Streamdown } from "streamdown";
 import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
 import { ProviderLogo } from "./Logos";
-import { Asked, tackTool, Visual } from "./TackTools";
+import { AgentCard, Asked, tackTool, Visual } from "./TackTools";
 
 const plugins = { code: createCodePlugin({ themes: ["github-light", "vitesse-dark"] }) };
 const controls = { code: { copy: true, download: false }, table: false };
@@ -17,7 +17,7 @@ type Tool = Of<"tool">;
 export function ItemView({ threadId, item, streaming }: { threadId: string; item: Item; streaming: boolean }) {
   switch (item.kind) {
     case "user":
-      return <UserMessage item={item} />;
+      return item.agents ? <AgentReports item={item} /> : <UserMessage item={item} />;
     case "assistant":
       return <Markdown text={item.text} streaming={streaming} />;
     case "turn":
@@ -26,6 +26,7 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
       return <Handoff item={item} />;
     case "tool": {
       const own = tackTool(item.name); // the rest render inside <Steps>
+      if (own === "agent") return <AgentCard tool={item} threadId={threadId} />;
       return own === "show" ? <Visual tool={item} /> : own === "ask" ? <Asked tool={item} /> : null;
     }
     case "error":
@@ -72,6 +73,28 @@ function Handoff({ item }: { item: Of<"handoff"> }) {
         </span>
       </span>
       <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
+// Sub-agents' reports, which Tack sends the agent as a message. Folded: the agent's reply says
+// what matters, and each sub-agent's thread has the full story.
+function AgentReports({ item }: { item: Of<"user"> }) {
+  const [open, setOpen] = useState(false);
+  const body = item.text.replace(/^<agent-reports>\n/, "").replace(/\n<\/agent-reports>[\s\S]*$/, "");
+  const count = body.match(/^## /gm)?.length ?? 1;
+  return (
+    <div className="pt-5 pb-1">
+      <button onClick={() => setOpen(!open)} className="flex h-6 items-center gap-2 text-[13px] text-faint hover:text-dim">
+        <Check size={13} className="text-ok/80" />
+        {count === 1 ? "Agent reported back" : `${count} agents reported back`}
+        <ChevronRight size={12} className={`transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div className="mt-1 border-l border-line pl-4 text-[13.5px] text-dim">
+          <Markdown text={body} streaming={false} />
+        </div>
+      )}
     </div>
   );
 }

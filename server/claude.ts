@@ -3,25 +3,34 @@
 
 import { createSdkMcpServer, query, tool, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Attachment, Command, Item, ModelOption, Todo } from "../shared/protocol";
-import { applyTodo, ASKED, systemPrompt, TOOLS } from "./prompt";
+import { agentDescription, applyTodo, ASKED, systemPrompt, TOOLS } from "./prompt";
 import type { AgentSession, SessionEvents, SessionOptions } from "./session";
 
 // Built-in tools Tack keeps. Everything else (scheduling, cron, worktrees, notifications, review
-// reporting, ...) is for other Claude Code surfaces and only costs context here.
-const BUILTIN_TOOLS = ["Agent", "Bash", "Read", "Edit", "Write", "Skill", "WebFetch", "WebSearch"];
+// reporting, ...) is for other Claude Code surfaces and only costs context here. Sub-agents are
+// Tack's own `agent` tool, which can run any provider and shows each one as a thread.
+const BUILTIN_TOOLS = ["Bash", "Read", "Edit", "Write", "Skill", "WebFetch", "WebSearch"];
 
-// ask / todo / show, served in-process. The model sees them as mcp__tack__<name>.
-function tackTools(events: SessionEvents, abort: AbortSignal) {
+// ask / todo / show / agent, served in-process. The model sees them as mcp__tack__<name>.
+// A sub-agent gets neither ask (nobody to ask) nor agent (one level deep).
+function tackTools(events: SessionEvents, opts: SessionOptions) {
   const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
   let todos: Todo[] = [];
   return createSdkMcpServer({
     name: "tack",
     alwaysLoad: true,
     tools: [
-      tool("ask", TOOLS.ask.description, TOOLS.ask.input, async ({ questions }) => {
-        events.ask(questions);
-        return text(ASKED);
-      }),
+      ...(opts.role === "agent"
+        ? []
+        : [
+            tool("ask", TOOLS.ask.description, TOOLS.ask.input, async ({ questions }) => {
+              events.ask(questions);
+              return text(ASKED);
+            }),
+          ]),
+      ...(opts.agentModels?.length
+        ? [tool("agent", agentDescription(opts.agentModels), TOOLS.agent.input, async (input) => text(events.agent(input)))]
+        : []),
       tool("todo", TOOLS.todo.description, TOOLS.todo.input, async (input) => {
         todos = applyTodo(todos, input);
         events.todo(todos);
@@ -91,9 +100,9 @@ export class ClaudeSession implements AgentSession {
         env: opts.env,
         abortController: this.abort,
         includePartialMessages: true,
-        systemPrompt: systemPrompt("claude"),
+        systemPrompt: systemPrompt("claude", opts.role),
         tools: BUILTIN_TOOLS,
-        mcpServers: { tack: tackTools(events, this.abort.signal) },
+        mcpServers: { tack: tackTools(events, opts) },
         skills: opts.skills ?? "all",
         title: "Tack", // Tack names threads itself; skips Claude's title-generation request
         permissionMode: opts.access === "full" ? "bypassPermissions" : "default",

@@ -24,12 +24,19 @@ export function Sidebar() {
   const drafting = useApp((s) => !!s.draft);
   const hasProjects = useApp((s) => s.projects.length > 0);
 
-  const waiting = new Set(Object.values(approvals).map((a) => a.threadId));
-  for (const t of Object.values(threads)) if (t.questions?.length) waiting.add(t.id);
+  // Sub-agents live inside their parent's thread; what they need shows on the parent.
+  const owner = (id: string) => threads[id]?.parentId ?? id;
+  const waiting = new Set(Object.values(approvals).map((a) => owner(a.threadId)));
+  const agentsWorking = new Set<string>();
+  for (const t of Object.values(threads)) {
+    if (t.questions?.length) waiting.add(t.id);
+    if (t.parentId && t.status === "running") agentsWorking.add(t.parentId);
+  }
   const sections: Record<Section, Thread[]> = { attention: [], working: [], active: [], settled: [] };
   for (const t of Object.values(threads).sort((a, b) => b.updatedAt - a.updatedAt)) {
+    if (t.parentId) continue;
     if (waiting.has(t.id) || t.status === "error" || (unread[t.id] && t.status !== "running")) sections.attention.push(t);
-    else if (t.status === "running") sections.working.push(t);
+    else if (t.status === "running" || agentsWorking.has(t.id)) sections.working.push(t);
     else if (t.settled) sections.settled.push(t);
     else sections.active.push(t);
   }
@@ -110,7 +117,10 @@ function Settled({ threads }: { threads: Thread[] }) {
 function ThreadRow({ thread }: { thread: Thread }) {
   const active = useApp((s) => s.activeThreadId === thread.id);
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
-  const approval = useApp((s) => Object.values(s.approvals).some((a) => a.threadId === thread.id));
+  const approval = useApp((s) =>
+    Object.values(s.approvals).some((a) => a.threadId === thread.id || s.threads[a.threadId]?.parentId === thread.id),
+  );
+  const agentsWorking = useApp((s) => Object.values(s.threads).some((t) => t.parentId === thread.id && t.status === "running"));
   const asking = !!thread.questions?.length;
   const waiting = approval || asking;
   const unread = useApp((s) => !!s.unread[thread.id]);
@@ -121,8 +131,8 @@ function ThreadRow({ thread }: { thread: Thread }) {
     ? { dot: "bg-brass", label: asking && !approval ? "Has a question" : "Needs approval" }
     : thread.status === "error"
       ? { dot: "bg-danger", label: "Failed" }
-      : thread.status === "running"
-        ? { dot: "bg-brass pulse", label: "Working" }
+      : thread.status === "running" || agentsWorking
+        ? { dot: "bg-brass pulse", label: thread.status === "running" ? "Working" : "Agents working" }
         : unread
           ? { dot: "bg-ink", label: "Finished" }
           : null;
