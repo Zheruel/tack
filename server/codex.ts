@@ -29,21 +29,25 @@ const config = (codexHome: string) => [
   "features.goals=false",
   "features.tool_suggest=false",
   "features.apps=false",
-  `skills.config=[{path=${JSON.stringify(`${codexHome}/skills/.system/skill-installer/SKILL.md`)},enabled=false}]`,
+  "features.sleep_tool=false",
+  "mcp_servers.openaiDeveloperDocs.enabled=false", // remote docs server; adds MCP resource tools to every request
+  `skills.config=[${HIDDEN_CODEX_SKILLS.map((s) => `{path=${JSON.stringify(`${codexHome}/skills/${s}/SKILL.md`)},enabled=false}`).join(",")}]`,
 ];
 
-// Plugins whose skills and tools are for documents and office apps, not code. `visualize` is
-// replaced by Tack's `show`.
-const DISABLED_PLUGINS = [
-  "documents@openai-primary-runtime",
-  "pdf@openai-primary-runtime",
-  "spreadsheets@openai-primary-runtime",
-  "presentations@openai-primary-runtime",
-  "template-creator@openai-primary-runtime",
-  "google-calendar@openai-curated",
-  "slack@openai-curated",
-  "visualize@openai-bundled",
-];
+// Skills that install other skills, document OpenAI's products or duplicate Tack's own tools.
+const HIDDEN_CODEX_SKILLS = [".system/skill-installer", ".system/skill-creator", ".system/openai-docs", "design"];
+
+// Plugins Tack threads keep: computer and browser use, and the dev services. Everything else
+// (documents, pages, sites, pets, ...) is switched off, including plugins added later.
+const KEPT_PLUGINS = new Set([
+  "unified-computer-use@openai-bundled",
+  "computer-use@openai-bundled",
+  "browser@openai-bundled",
+  "chrome@openai-bundled",
+  "codex-app-tools@openai-bundled",
+  "github@openai-curated-remote",
+  "linear@openai-curated-remote",
+]);
 
 const DYNAMIC_TOOLS = (["ask", "show"] as const).map((name) => ({
   type: "function",
@@ -152,6 +156,7 @@ export class CodexSession implements AgentSession {
   private open = new Map<string, Item>(); // items started but not completed
   private shown = new Set<string>(); // thinking is only shown once it has text
   private skills = new Map<string, string>(); // name -> path
+  private disabledPlugins?: Promise<string[]>;
   private model: string;
   private effort: Effort;
   closed = false;
@@ -229,6 +234,19 @@ export class CodexSession implements AgentSession {
 
   // ---- internals
 
+  private pluginsToDisable(): Promise<string[]> {
+    return (this.disabledPlugins ??= (async () => {
+      await this.init;
+      const found: string[] = [];
+      const result = await this.rpc.request("plugin/installed", { cwds: [this.opts.cwd] }).catch(() => undefined);
+      JSON.stringify(result ?? {}, (_, v) => {
+        if (v && typeof v.id === "string" && v.installed && v.enabled && !KEPT_PLUGINS.has(v.id)) found.push(v.id);
+        return v;
+      });
+      return found;
+    })());
+  }
+
   private policy() {
     return this.opts.access === "full"
       ? { approvalPolicy: "never", sandbox: "danger-full-access", sandboxPolicy: { type: "dangerFullAccess" } }
@@ -278,7 +296,7 @@ export class CodexSession implements AgentSession {
       model: this.model,
       effort: this.effort,
       approvalPolicy,
-      disabledPluginIds: DISABLED_PLUGINS,
+      disabledPluginIds: await this.pluginsToDisable(),
       ...(sandboxPolicy ? { sandboxPolicy } : {}),
     });
     this.turnId = turn.id;

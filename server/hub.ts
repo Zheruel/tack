@@ -67,6 +67,10 @@ const HIDDEN_SKILLS = new Set([
   "plugin-authoring",
   "loop",
   "schedule",
+  "dataviz", // Tack's `show` covers visuals
+  "skill-creator",
+  "design",
+  "design-sync",
   // Codex
   "documents:documents",
   "pdf:pdf",
@@ -76,6 +80,7 @@ const HIDDEN_SKILLS = new Set([
   "template-creator:template-creator",
   "visualize:visualize",
   "skill-installer",
+  "openai-docs",
 ]);
 
 export class Hub {
