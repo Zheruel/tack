@@ -1,12 +1,13 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { ArrowUp, Check, ChevronDown, ChevronRight, Image as ImageIcon, Paperclip, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_EFFORT, type Access, type Attachment, type Effort, type ModelOption, type Provider } from "../../../shared/protocol";
+import { DEFAULT_EFFORT, type Access, type Attachment, type Effort, type Provider } from "../../../shared/protocol";
 import { onFileDrop } from "../native";
 import { call } from "../rpc";
 import { sendDraft, updateDraft, useApp } from "../store";
 import { Approval } from "./Approvals";
 import { CompletionMenu, useCompletion, type Suggestion } from "./Autocomplete";
+import { ModelPicker } from "./ModelPicker";
 
 // Unsent text survives switching threads. Drafts (new threads) share one slot.
 const drafts = new Map<string, string>();
@@ -184,7 +185,7 @@ export function Composer({ threadId }: { threadId?: string }) {
               e.target.value = "";
             }}
           />
-          <ModelPicker config={config} onPick={configure} />
+          <ModelChoice config={config} onPick={configure} />
           <EffortPicker config={config} onPick={configure} />
           <AccessPicker config={config} onPick={configure} />
           <div className="flex-1" />
@@ -292,94 +293,17 @@ function Trigger({ children, title }: { children: React.ReactNode; title: string
   );
 }
 
-const PROVIDERS: { id: Provider; label: string }[] = [
-  { id: "claude", label: "Claude" },
-  { id: "codex", label: "Codex" },
-];
-
-function ModelPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
+// Switching model keeps the effort when the new model supports it.
+function ModelChoice({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
   const models = useApp((s) => s.models);
-  const current = models.find((m) => m.value === config.model);
-  const groups = PROVIDERS.map((p) => ({ ...p, models: models.filter((m) => m.provider === p.id) })).filter((g) => g.models.length);
-  const pick = (model: string) => {
-    const efforts = models.find((m) => m.value === model)?.efforts ?? [];
-    // Keep the effort if the new model supports it; otherwise fall back to the default.
-    onPick(efforts.length && !efforts.includes(config.effort) ? { model, effort: DEFAULT_EFFORT } : { model });
-  };
   return (
-    <Menu.Root>
-      <Trigger title="Model">
-        {current && groups.length > 1 && <ProviderMark provider={current.provider} />}
-        {current?.label ?? config.model}
-      </Trigger>
-      <MenuContent>
-        {groups.map((g, gi) => (
-          <ModelGroup key={g.id} label={g.label} models={g.models} first={gi === 0} config={config} pick={pick} />
-        ))}
-      </MenuContent>
-    </Menu.Root>
-  );
-}
-
-function ModelGroup({
-  label,
-  models,
-  first,
-  config,
-  pick,
-}: {
-  label: string;
-  models: ModelOption[];
-  first: boolean;
-  config: Config;
-  pick: (model: string) => void;
-}) {
-  const latest = models.filter((m) => m.group === "latest");
-  const more = models.filter((m) => m.group === "more");
-  const inMore = more.find((m) => m.value === config.model);
-  return (
-    <>
-      {!first && <Menu.Separator className="mx-2 my-1.5 h-px bg-line" />}
-      <Menu.Label className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1 text-[11.5px] text-faint">
-        <ProviderMark provider={models[0]!.provider} />
-        {label}
-      </Menu.Label>
-      {latest.map((m) => (
-        <MenuItem key={m.value} selected={m.value === config.model} label={m.label} hint={m.description} onSelect={() => pick(m.value)} />
-      ))}
-      {more.length > 0 && (
-        <Menu.Sub>
-          <Menu.SubTrigger className="flex cursor-default items-center gap-2 rounded-xl px-2.5 py-1.5 text-[13px] text-dim outline-none data-highlighted:bg-hover data-highlighted:text-ink data-[state=open]:bg-hover">
-            <span className="flex-1">More {label} models</span>
-            {inMore && <span className="text-[11.5px] text-brass">{inMore.label}</span>}
-            <ChevronRight size={13} className="text-faint" />
-          </Menu.SubTrigger>
-          <Menu.Portal>
-            <Menu.SubContent
-              sideOffset={6}
-              className="z-50 max-h-[60vh] min-w-52 overflow-y-auto rounded-2xl border border-line bg-raised p-1.5 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]"
-            >
-              {more.map((m) => (
-                <MenuItem key={m.value} selected={m.value === config.model} label={m.label} onSelect={() => pick(m.value)} />
-              ))}
-            </Menu.SubContent>
-          </Menu.Portal>
-        </Menu.Sub>
-      )}
-    </>
-  );
-}
-
-// A small glyph so you can tell Claude and Codex models apart at a glance.
-export function ProviderMark({ provider }: { provider: Provider }) {
-  return provider === "codex" ? (
-    <svg viewBox="0 0 12 12" className="size-3 shrink-0 text-[#9fb4c9]" aria-label="Codex">
-      <path d="M6 1 10.33 3.5v5L6 11 1.67 8.5v-5Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-    </svg>
-  ) : (
-    <svg viewBox="0 0 12 12" className="size-3 shrink-0 text-brass" aria-label="Claude">
-      <path d="M6 1v10M1 6h10M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
+    <ModelPicker
+      value={config.model}
+      onPick={(model) => {
+        const efforts = models.find((m) => m.value === model)?.efforts ?? [];
+        onPick(efforts.length && !efforts.includes(config.effort) ? { model, effort: DEFAULT_EFFORT } : { model });
+      }}
+    />
   );
 }
 

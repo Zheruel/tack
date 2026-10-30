@@ -5,7 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Streamdown } from "streamdown";
 import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
-import { ProviderMark } from "./Composer";
+import { ProviderLogo } from "./Logos";
 
 const plugins = { code: createCodePlugin({ themes: ["github-light", "vitesse-dark"] }) };
 const controls = { code: { copy: true, download: false }, table: false };
@@ -60,7 +60,7 @@ function Handoff({ item }: { item: Of<"handoff"> }) {
     <div className="flex items-center gap-3 pt-7 pb-1 text-[12px] text-faint">
       <span className="h-px flex-1 bg-line" />
       <span className="flex items-center gap-1.5">
-        <ProviderMark provider={item.to} />
+        <ProviderLogo provider={item.to} className="size-3" />
         Switched to {AGENT[item.to]}
         <span className="text-faint/70">
           with {item.carried} {item.carried === 1 ? "entry" : "entries"} of context from {AGENT[item.from]}

@@ -1,10 +1,11 @@
 import * as Ctx from "@radix-ui/react-context-menu";
-import { ArrowDown, Check, ChevronRight, RotateCcw, SquarePen } from "lucide-react";
+import { Check, ChevronRight, RotateCcw, SquarePen } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { CliName, CliStatus, Thread } from "../../../shared/protocol";
 import { pickFolder } from "../native";
 import { call } from "../rpc";
 import { openThread, setShowSettled, startDraft, useApp } from "../store";
+import { ClaudeLogo, OpenAILogo } from "./Logos";
 
 export async function addProject() {
   const path = await pickFolder();
@@ -229,7 +230,7 @@ function CtxItem({
 
 const CLI_NAMES: Record<CliName, string> = { claude: "Claude Code", codex: "Codex" };
 
-// One card per CLI with a newer release. Click to update; it confirms, then gets out of the way.
+// One quiet row per CLI with a newer release. Click to update; it confirms, then fades away.
 function Updates() {
   const clis = useApp((s) => s.clis);
   const [done, setDone] = useState<Partial<Record<CliName, string>>>({});
@@ -259,42 +260,46 @@ function Updates() {
 function UpdateCard({ cli, doneVersion }: { cli: CliStatus; doneVersion?: string }) {
   const updating = cli.state === "updating";
   const finished = !!doneVersion && cli.state === "current";
+  const failed = !!cli.error && !updating;
   const name = CLI_NAMES[cli.name];
 
   return (
     <button
       disabled={updating || finished}
       onClick={() => call("cli.update", { name: cli.name })}
-      title={cli.error ? `Last attempt failed: ${cli.error}` : `Update ${name} to ${cli.latest}. Idle chats restart on it.`}
-      className="update-card group relative flex w-full items-center gap-3 overflow-hidden rounded-xl border border-brass/25 bg-[linear-gradient(135deg,rgba(201,163,91,0.13),rgba(201,163,91,0.04)_60%)] px-3 py-2.5 text-left transition-[border-color,transform] duration-200 hover:border-brass/50 active:scale-[0.985] disabled:active:scale-100"
+      title={failed ? `Update failed: ${cli.error}` : `Update ${name} to ${cli.latest}. Idle chats restart on it.`}
+      className={`update-card group flex w-full items-center gap-2.5 rounded-xl border border-line/70 bg-raised/70 py-2 pr-2 pl-2 text-left transition-colors hover:border-line hover:bg-raised ${
+        finished ? "fade-away" : ""
+      }`}
     >
-      <span
-        className={`relative flex size-7 shrink-0 items-center justify-center rounded-full transition-colors duration-300 ${
-          finished ? "bg-ok/20 text-ok" : "bg-brass/15 text-brass"
-        }`}
-      >
-        {finished ? (
-          <Check size={14} strokeWidth={2.5} className="pop" />
-        ) : (
-          <ArrowDown size={14} strokeWidth={2.25} className={updating ? "nudge" : "transition-transform group-hover:translate-y-[1px]"} />
+      <span className="relative flex size-8 shrink-0 items-center justify-center rounded-full border border-line/80 bg-canvas">
+        {cli.name === "codex" ? <OpenAILogo className="size-4" /> : <ClaudeLogo className="size-4" />}
+        {updating && (
+          <svg viewBox="0 0 38 38" className="spin absolute -inset-[3px] size-[38px]">
+            <circle cx="19" cy="19" r="18" fill="none" stroke="var(--color-brass)" strokeWidth="1.5" strokeDasharray="28 86" strokeLinecap="round" />
+          </svg>
         )}
-        {updating && <span className="spin-ring absolute inset-0 rounded-full" />}
+        {finished && (
+          <span className="pop absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full bg-ok text-canvas ring-2 ring-rail">
+            <Check size={9} strokeWidth={3.5} />
+          </span>
+        )}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] font-medium text-ink">
-          {finished ? `${name} updated` : updating ? `Updating ${name}…` : `${name} ${cli.latest}`}
-        </span>
-        <span className={`block truncate text-[11.5px] ${cli.error && !updating ? "text-danger/90" : "text-dim"}`}>
-          {finished
-            ? `Now on ${doneVersion}`
-            : updating
-              ? `${cli.installed} → ${cli.latest}`
-              : cli.error
-                ? "Update failed. Click to retry"
-                : "Update available. Click to install"}
+        <span className="block truncate text-[12.5px] text-ink">{name}</span>
+        <span className={`block truncate text-[11.5px] tabular-nums ${failed ? "text-danger/90" : "text-faint"}`}>
+          {finished ? `Updated to ${doneVersion}` : updating ? "Updating…" : failed ? "Update failed" : `${cli.installed} → ${cli.latest}`}
         </span>
       </span>
-      {updating && <span className="shimmer pointer-events-none absolute inset-0" />}
+      {!updating && !finished && (
+        <span
+          className={`shrink-0 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${
+            failed ? "text-danger group-hover:bg-danger/10" : "bg-brass/12 text-brass group-hover:bg-brass/20"
+          }`}
+        >
+          {failed ? "Retry" : "Update"}
+        </span>
+      )}
     </button>
   );
 }

@@ -1,89 +1,46 @@
-import { ArrowUpRight, GitBranch, GitPullRequest, GitPullRequestDraft, GitMerge } from "lucide-react";
+import { ArrowUpRight, GitBranch, GitMerge, GitPullRequest, GitPullRequestDraft } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { GitInfo, PullRequest } from "../../../shared/protocol";
 import { openExternal } from "../native";
 import { call } from "../rpc";
 import { useApp } from "../store";
-import { ProviderMark, tokens } from "./Composer";
 
 const REFRESH_MS = 30_000;
 
-// The thread's surroundings: where its work lives (branch, PR) and how full its context is.
+// Where the thread's work lives: the branch's PR as one tile, like Claude Code.
 export function Panel({ threadId }: { threadId: string }) {
   const thread = useApp((s) => s.threads[threadId])!;
-  const model = useApp((s) => s.models.find((m) => m.value === thread.model));
   const git = useGit(thread.projectId, thread.status);
 
   return (
-    <aside className="flex w-[288px] shrink-0 flex-col gap-6 overflow-y-auto border-l border-line/70 bg-canvas px-4 pt-[58px] pb-5">
-      <Section title="Branch">
-        {git === undefined ? (
-          <Skeleton />
-        ) : git.branch === null ? (
-          <p className="text-[12.5px] text-faint">Not a git repository</p>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 text-[13px] text-ink">
-              <GitBranch size={14} className="shrink-0 text-faint" />
-              <span className="truncate font-mono text-[12.5px]">{git.branch}</span>
-            </div>
-            <p className="mt-1.5 pl-[22px] text-[12px] text-faint">
-              {git.changes.files ? (
-                <>
-                  {git.changes.files} uncommitted {git.changes.files === 1 ? "file" : "files"}{" "}
-                  {git.changes.additions + git.changes.deletions > 0 && (
-                    <Diffstat add={git.changes.additions} del={git.changes.deletions} />
-                  )}
-                </>
-              ) : (
-                "Working tree clean"
-              )}
+    <aside className="w-[264px] shrink-0 border-l border-line/70 bg-canvas px-3 pt-[54px]">
+      <h2 className="px-1 pb-2 text-[11.5px] font-medium text-faint">Changes</h2>
+      {git === undefined ? (
+        <div className="h-[58px] animate-pulse rounded-xl bg-raised/60" />
+      ) : git.pr ? (
+        <PrTile pr={git.pr} />
+      ) : (
+        <div className="rounded-xl border border-line/80 px-3 py-2.5">
+          <div className="flex items-center gap-2 text-[12.5px] text-dim">
+            <GitBranch size={13} className="shrink-0 text-faint" />
+            <span className="truncate font-mono text-[12px]">{git.branch ?? "Not a git repository"}</span>
+          </div>
+          {git.branch && (
+            <p className="mt-1 pl-[21px] text-[12px] text-faint">
+              {git.changes.files ? `${git.changes.files} uncommitted, no PR yet` : "No pull request"}
             </p>
-          </>
-        )}
-      </Section>
-
-      {git?.branch && (
-        <Section title="Pull request">{git.pr ? <PrCard pr={git.pr} /> : <p className="text-[12.5px] text-faint">None for this branch yet</p>}</Section>
+          )}
+        </div>
       )}
-
-      <Section title="Context">
-        <ContextMeter context={thread.context} />
-        <p className="mt-2 flex items-center gap-1.5 text-[12px] text-faint">
-          <ProviderMark provider={thread.provider} />
-          {model?.label ?? thread.model}
-        </p>
-      </Section>
     </aside>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section>
-      <h2 className="mb-2 text-[11.5px] font-medium text-faint">{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function Skeleton() {
-  return <div className="h-4 w-32 animate-pulse rounded bg-hover" />;
-}
-
-function Diffstat({ add, del }: { add: number; del: number }) {
-  return (
-    <span className="font-mono text-[11.5px] tabular-nums">
-      <span className="text-ok">+{add}</span> <span className="text-danger/90">−{del}</span>
-    </span>
-  );
-}
-
-const PR_STATE = {
-  OPEN: { icon: GitPullRequest, label: "Open", color: "text-ok" },
-  DRAFT: { icon: GitPullRequestDraft, label: "Draft", color: "text-dim" },
-  MERGED: { icon: GitMerge, label: "Merged", color: "text-[#b59ce0]" },
-  CLOSED: { icon: GitPullRequest, label: "Closed", color: "text-danger/90" },
+const STATE = {
+  OPEN: { icon: GitPullRequest, color: "text-ok", label: "Open" },
+  DRAFT: { icon: GitPullRequestDraft, color: "text-dim", label: "Draft" },
+  MERGED: { icon: GitMerge, color: "text-[#b59ce0]", label: "Merged" },
+  CLOSED: { icon: GitPullRequest, color: "text-danger/90", label: "Closed" },
 };
 
 const CHECKS = {
@@ -92,51 +49,27 @@ const CHECKS = {
   pending: { dot: "bg-brass pulse", label: "Checks running" },
 };
 
-function PrCard({ pr }: { pr: PullRequest }) {
-  const state = PR_STATE[pr.draft && pr.state === "OPEN" ? "DRAFT" : pr.state];
+function PrTile({ pr }: { pr: PullRequest }) {
+  const state = STATE[pr.draft && pr.state === "OPEN" ? "DRAFT" : pr.state];
   const checks = pr.checks && CHECKS[pr.checks];
   return (
     <button
       onClick={() => openExternal(pr.url)}
-      title={`Open #${pr.number} in your browser`}
-      className="group w-full rounded-xl border border-line bg-raised px-3 py-2.5 text-left transition-colors hover:border-[#4a423a] hover:bg-hover/60"
+      title={`${state.label}. Open #${pr.number} in your browser`}
+      className="group w-full rounded-xl border border-line/80 px-3 py-2.5 text-left transition-colors hover:border-[#4a423a] hover:bg-raised/60"
     >
-      <div className="flex items-center gap-1.5 text-[12px]">
-        <state.icon size={13} className={state.color} />
-        <span className={state.color}>{state.label}</span>
-        <span className="text-faint">#{pr.number}</span>
-        <ArrowUpRight size={13} className="ml-auto text-faint transition-transform group-hover:translate-x-px group-hover:-translate-y-px group-hover:text-ink" />
+      <div className="flex items-center gap-2">
+        <state.icon size={14} className={`shrink-0 ${state.color}`} />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{pr.title}</span>
+        <ArrowUpRight size={13} className="shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
       </div>
-      <p className="mt-1 line-clamp-2 text-[13px] leading-snug text-ink">{pr.title}</p>
-      <div className="mt-2 flex items-center gap-3 text-[12px] text-faint">
-        <Diffstat add={pr.additions} del={pr.deletions} />
-        {checks && (
-          <span className="flex items-center gap-1.5">
-            <span className={`size-1.5 rounded-full ${checks.dot}`} />
-            {checks.label}
-          </span>
-        )}
+      <div className="mt-1 flex items-center gap-2 pl-[22px] font-mono text-[11.5px] tabular-nums">
+        <span className="text-faint">#{pr.number}</span>
+        <span className="text-ok">+{pr.additions.toLocaleString()}</span>
+        <span className="-ml-1 text-danger/90">−{pr.deletions.toLocaleString()}</span>
+        {checks && <span title={checks.label} className={`ml-auto size-1.5 rounded-full ${checks.dot}`} />}
       </div>
     </button>
-  );
-}
-
-function ContextMeter({ context }: { context?: { used: number; window: number } }) {
-  if (!context) return <p className="text-[12.5px] text-faint">Fills in after the first reply</p>;
-  const pct = Math.min(1, context.used / context.window);
-  const color = pct > 0.85 ? "bg-danger" : pct > 0.6 ? "bg-[#d9a35b]" : "bg-brass";
-  return (
-    <>
-      <div className="flex items-baseline justify-between text-[12.5px]">
-        <span className="text-ink tabular-nums">{tokens(context.used)}</span>
-        <span className="text-faint tabular-nums">
-          of {tokens(context.window)} ({Math.round(pct * 100)}%)
-        </span>
-      </div>
-      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-hover">
-        <div className={`h-full rounded-full ${color} transition-[width] duration-500`} style={{ width: `${Math.max(pct * 100, 1.5)}%` }} />
-      </div>
-    </>
   );
 }
 
