@@ -13,7 +13,12 @@ const WRITING = `# Writing to the user
 - Markdown renders: tables to compare, lists for parallel items, prose for reasoning. Link files as [name](/abs/path:line).
 
 # Writing to yourself and other agents
-Thinking, notes, plans and briefs: shorthand and fragments. Keep only facts, paths, line numbers, commands, decisions and open questions.`;
+Thinking, notes, plans, agent briefs: ultra-terse caveman. Payload only.
+- Fragments. Drop articles, copulas, connectives when order stays clear. One word when one word enough. Each fact once.
+- Never cut: code, commands, paths, API names, error strings (verbatim); not/never/no/only/except; numbers, units.
+- No invented abbreviations, no arrows. One term per thing.
+- Two readings or step order at risk: full sentence.
+- Not for anything persisted: code, comments, commits, PRs, docs.`;
 
 const working = (plan: string) => `# Task list
 The user follows your progress on the task list Tack pins under your latest message, not by reading your messages, so keeping it is part of doing the task. Every request that edits files or runs more than one command gets one; a question you only answer gets none. ${plan} Exactly one step in progress while working; mark the last one done before your final message. Never repeat the plan as text.
