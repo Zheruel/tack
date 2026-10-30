@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import type { ApprovalRequest } from "../../../shared/protocol";
 import { call } from "../rpc";
 import { useApp } from "../store";
-import { PROVIDER_NAMES, ProviderLogo } from "./Logos";
 
 // Docked on top of the composer. One request at a time: ↵ allows, Esc denies.
 export function Approval({ threadId }: { threadId: string }) {
@@ -29,10 +28,7 @@ export function Approval({ threadId }: { threadId: string }) {
   const { title, body, note } = describe(request);
 
   return (
-    <div className="dock-in mb-2 flex items-center gap-3 rounded-2xl border border-brass/25 bg-raised py-2 pr-2 pl-3.5">
-      <span title={`${PROVIDER_NAMES[request.provider]} is asking`}>
-        <ProviderLogo provider={request.provider} className="size-4" />
-      </span>
+    <div className="dock-in mb-2 flex items-center gap-3 rounded-2xl border border-brass/25 bg-raised py-2 pr-2 pl-4">
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] text-ink">
           {title}
