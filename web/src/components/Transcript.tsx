@@ -2,7 +2,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store";
-import { Approvals } from "./Approvals";
 import { ItemView, Steps } from "./ItemView";
 
 export type Row = { key: string; kind: "item"; id: string } | { key: string; kind: "steps"; ids: string[] };
@@ -115,7 +114,6 @@ export function Transcript({ threadId }: { threadId: string }) {
             })}
           </div>
           {running && <Working threadId={threadId} />}
-          <Approvals threadId={threadId} />
         </div>
       </div>
       {away && (

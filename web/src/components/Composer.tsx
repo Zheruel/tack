@@ -1,10 +1,12 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { ArrowUp, Check, ChevronDown, ChevronRight, Image as ImageIcon, Paperclip, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_EFFORT, type Access, type Attachment, type Effort } from "../../../shared/protocol";
+import { DEFAULT_EFFORT, type Access, type Attachment, type Effort, type ModelOption, type Provider } from "../../../shared/protocol";
 import { onFileDrop } from "../native";
 import { call } from "../rpc";
 import { sendDraft, updateDraft, useApp } from "../store";
+import { Approval } from "./Approvals";
+import { CompletionMenu, useCompletion, type Suggestion } from "./Autocomplete";
 
 // Unsent text survives switching threads. Drafts (new threads) share one slot.
 const drafts = new Map<string, string>();
@@ -28,6 +30,10 @@ export function Composer({ threadId }: { threadId?: string }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const running = thread?.status === "running";
+  const [caret, setCaret] = useState(0);
+  const provider: Provider = useApp((s) => s.models.find((m) => m.value === config?.model)?.provider ?? thread?.provider ?? "claude");
+  const projectId = thread?.projectId ?? draft?.projectId;
+  const { completion, move, dismiss, setIndex } = useCompletion(text, caret, projectId, provider);
 
   useEffect(() => {
     setText(drafts.get(key) ?? "");
@@ -80,7 +86,29 @@ export function Composer({ threadId }: { threadId?: string }) {
     if (images.length) setAttachments((a) => [...a, ...images]);
   };
 
+  const pick = (s: Suggestion) => {
+    if (!completion) return;
+    const next = text.slice(0, completion.start) + s.insert + text.slice(completion.end);
+    const at = completion.start + s.insert.length;
+    setText(next);
+    setCaret(at);
+    requestAnimationFrame(() => input.current?.setSelectionRange(at, at));
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (completion && !e.nativeEvent.isComposing) {
+      const keys: Record<string, () => void> = {
+        ArrowDown: () => move(1),
+        ArrowUp: () => move(-1),
+        Enter: () => pick(completion.items[completion.index]!),
+        Tab: () => pick(completion.items[completion.index]!),
+        Escape: dismiss,
+      };
+      if (keys[e.key] && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        return keys[e.key]!();
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       send(e.metaKey);
@@ -94,11 +122,13 @@ export function Composer({ threadId }: { threadId?: string }) {
 
   return (
     <div className="mx-auto w-full max-w-[768px] px-8 pb-6">
+      {threadId && <Approval threadId={threadId} />}
       {threadId && <Queue threadId={threadId} />}
       <div
         onClick={() => input.current?.focus()}
-        className="rounded-[20px] border border-line bg-raised shadow-[0_10px_40px_-16px_rgba(0,0,0,0.7)] transition-colors focus-within:border-[#4a423a]"
+        className="relative rounded-[20px] border border-line bg-raised shadow-[0_10px_40px_-16px_rgba(0,0,0,0.7)] transition-colors focus-within:border-[#4a423a]"
       >
+        {completion && <CompletionMenu completion={completion} onPick={pick} onHover={setIndex} />}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3.5 pt-3.5">
             {attachments.map((a, i) => (
@@ -120,7 +150,11 @@ export function Composer({ threadId }: { threadId?: string }) {
           value={text}
           rows={1}
           autoFocus
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setCaret(e.target.selectionStart);
+          }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={onKeyDown}
           onPaste={(e) => {
             if (e.clipboardData.files.length) {
@@ -154,6 +188,7 @@ export function Composer({ threadId }: { threadId?: string }) {
           <EffortPicker config={config} onPick={configure} />
           <AccessPicker config={config} onPick={configure} />
           <div className="flex-1" />
+          {thread?.context && <ContextRing used={thread.context.used} window={thread.context.window} />}
           {running && (
             <button
               onClick={() => call("chat.interrupt", { threadId: threadId! })}
@@ -257,11 +292,15 @@ function Trigger({ children, title }: { children: React.ReactNode; title: string
   );
 }
 
+const PROVIDERS: { id: Provider; label: string }[] = [
+  { id: "claude", label: "Claude" },
+  { id: "codex", label: "Codex" },
+];
+
 function ModelPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
   const models = useApp((s) => s.models);
   const current = models.find((m) => m.value === config.model);
-  const latest = models.filter((m) => m.group === "latest");
-  const more = models.filter((m) => m.group === "more");
+  const groups = PROVIDERS.map((p) => ({ ...p, models: models.filter((m) => m.provider === p.id) })).filter((g) => g.models.length);
   const pick = (model: string) => {
     const efforts = models.find((m) => m.value === model)?.efforts ?? [];
     // Keep the effort if the new model supports it; otherwise fall back to the default.
@@ -269,43 +308,114 @@ function ModelPicker({ config, onPick }: { config: Config; onPick: (p: Partial<C
   };
   return (
     <Menu.Root>
-      <Trigger title="Model">{current?.label ?? config.model}</Trigger>
+      <Trigger title="Model">
+        {current && groups.length > 1 && <ProviderMark provider={current.provider} />}
+        {current?.label ?? config.model}
+      </Trigger>
       <MenuContent>
-        <Menu.Label className="px-2.5 pt-1.5 pb-1 text-[11.5px] text-faint">Model</Menu.Label>
-        {latest.map((m) => (
-          <MenuItem
-            key={m.value}
-            selected={m.value === config.model}
-            label={m.label}
-            hint={m.description}
-            onSelect={() => pick(m.value)}
-          />
+        {groups.map((g, gi) => (
+          <ModelGroup key={g.id} label={g.label} models={g.models} first={gi === 0} config={config} pick={pick} />
         ))}
-        {more.length > 0 && (
-          <>
-            <Menu.Separator className="mx-2 my-1.5 h-px bg-line" />
-            <Menu.Sub>
-              <Menu.SubTrigger className="flex cursor-default items-center gap-2 rounded-xl px-2.5 py-2 text-[13px] text-dim outline-none data-highlighted:bg-hover data-highlighted:text-ink data-[state=open]:bg-hover">
-                <span className="flex-1">More models</span>
-                {more.some((m) => m.value === config.model) && <span className="text-[11.5px] text-brass">{current?.label}</span>}
-                <ChevronRight size={13} className="text-faint" />
-              </Menu.SubTrigger>
-              <Menu.Portal>
-                <Menu.SubContent
-                  sideOffset={6}
-                  className="z-50 max-h-[60vh] min-w-52 overflow-y-auto rounded-2xl border border-line bg-raised p-1.5 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]"
-                >
-                  {more.map((m) => (
-                    <MenuItem key={m.value} selected={m.value === config.model} label={m.label} onSelect={() => pick(m.value)} />
-                  ))}
-                </Menu.SubContent>
-              </Menu.Portal>
-            </Menu.Sub>
-          </>
-        )}
       </MenuContent>
     </Menu.Root>
   );
+}
+
+function ModelGroup({
+  label,
+  models,
+  first,
+  config,
+  pick,
+}: {
+  label: string;
+  models: ModelOption[];
+  first: boolean;
+  config: Config;
+  pick: (model: string) => void;
+}) {
+  const latest = models.filter((m) => m.group === "latest");
+  const more = models.filter((m) => m.group === "more");
+  const inMore = more.find((m) => m.value === config.model);
+  return (
+    <>
+      {!first && <Menu.Separator className="mx-2 my-1.5 h-px bg-line" />}
+      <Menu.Label className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1 text-[11.5px] text-faint">
+        <ProviderMark provider={models[0]!.provider} />
+        {label}
+      </Menu.Label>
+      {latest.map((m) => (
+        <MenuItem key={m.value} selected={m.value === config.model} label={m.label} hint={m.description} onSelect={() => pick(m.value)} />
+      ))}
+      {more.length > 0 && (
+        <Menu.Sub>
+          <Menu.SubTrigger className="flex cursor-default items-center gap-2 rounded-xl px-2.5 py-1.5 text-[13px] text-dim outline-none data-highlighted:bg-hover data-highlighted:text-ink data-[state=open]:bg-hover">
+            <span className="flex-1">More {label} models</span>
+            {inMore && <span className="text-[11.5px] text-brass">{inMore.label}</span>}
+            <ChevronRight size={13} className="text-faint" />
+          </Menu.SubTrigger>
+          <Menu.Portal>
+            <Menu.SubContent
+              sideOffset={6}
+              className="z-50 max-h-[60vh] min-w-52 overflow-y-auto rounded-2xl border border-line bg-raised p-1.5 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]"
+            >
+              {more.map((m) => (
+                <MenuItem key={m.value} selected={m.value === config.model} label={m.label} onSelect={() => pick(m.value)} />
+              ))}
+            </Menu.SubContent>
+          </Menu.Portal>
+        </Menu.Sub>
+      )}
+    </>
+  );
+}
+
+// A small glyph so you can tell Claude and Codex models apart at a glance.
+export function ProviderMark({ provider }: { provider: Provider }) {
+  return provider === "codex" ? (
+    <svg viewBox="0 0 12 12" className="size-3 shrink-0 text-[#9fb4c9]" aria-label="Codex">
+      <path d="M6 1 10.33 3.5v5L6 11 1.67 8.5v-5Z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg viewBox="0 0 12 12" className="size-3 shrink-0 text-brass" aria-label="Claude">
+      <path d="M6 1v10M1 6h10M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// How full the model's context is. Fills brass, warms toward red near the limit.
+function ContextRing({ used, window }: { used: number; window: number }) {
+  const pct = Math.min(1, used / window);
+  const r = 6.5;
+  const c = 2 * Math.PI * r;
+  const color = pct > 0.85 ? "var(--color-danger)" : pct > 0.6 ? "#d9a35b" : "var(--color-brass)";
+  return (
+    <span
+      title={`Context: ${tokens(used)} of ${tokens(window)} tokens (${Math.round(pct * 100)}%)`}
+      className="mr-2 flex items-center gap-1.5 text-[11.5px] text-faint tabular-nums"
+    >
+      <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
+        <circle cx="8" cy="8" r={r} fill="none" stroke="var(--color-line)" strokeWidth="2" />
+        <circle
+          cx="8"
+          cy="8"
+          r={r}
+          fill="none"
+          stroke={color}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - Math.max(pct, 0.02))}
+          className="transition-[stroke-dashoffset] duration-500"
+        />
+      </svg>
+      {Math.round(pct * 100)}%
+    </span>
+  );
+}
+
+export function tokens(n: number) {
+  return n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
 const EFFORTS: Record<Effort, { label: string; hint: string; level: number }> = {
@@ -314,6 +424,7 @@ const EFFORTS: Record<Effort, { label: string; hint: string; level: number }> = 
   high: { label: "High", hint: "Thorough. The default", level: 3 },
   xhigh: { label: "Extra high", hint: "Deeper reasoning for hard problems", level: 4 },
   max: { label: "Max", hint: "Everything it has. Slowest", level: 5 },
+  ultra: { label: "Ultra", hint: "Codex's longest reasoning", level: 5 },
 };
 
 // Five ascending bars, filled up to the effort level.
@@ -381,7 +492,7 @@ function AccessPicker({ config, onPick }: { config: Config; onPick: (p: Partial<
         <MenuItem
           selected={!full}
           label="Ask first"
-          hint="Approve anything your Claude settings don't allow"
+          hint="Approve commands and edits before they run"
           onSelect={() => onPick({ access: "ask" })}
         />
       </MenuContent>

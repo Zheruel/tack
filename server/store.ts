@@ -4,7 +4,13 @@
 import { Database } from "bun:sqlite";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Effort, Access, Item, Project, Thread } from "../shared/protocol";
+import type { Effort, Access, Item, Project, Provider, Thread } from "../shared/protocol";
+
+// A thread's native session with one provider, and how much of the transcript it has seen.
+export interface NativeSession {
+  id?: string;
+  seen?: number;
+}
 
 export class Store {
   private db: Database;
@@ -34,6 +40,15 @@ export class Store {
     const cols = this.db.query<{ name: string }, []>("PRAGMA table_info(threads)").all().map((c) => c.name);
     // null: follow the auto rule; 1: settled by hand; 0: kept open by hand.
     if (!cols.includes("settled")) this.db.run("ALTER TABLE threads ADD COLUMN settled INTEGER");
+    if (!cols.includes("sessions")) {
+      this.db.run("ALTER TABLE threads ADD COLUMN sessions TEXT NOT NULL DEFAULT '{}'");
+      // Older threads only knew Claude, and Claude has seen all of them.
+      for (const r of this.db.query<{ id: string; session_id: string }, []>("SELECT id, session_id FROM threads WHERE session_id IS NOT NULL").all())
+        this.db
+          .query("UPDATE threads SET sessions = ? WHERE id = ?")
+          .run(JSON.stringify({ claude: { id: r.session_id, seen: this.items(r.id).length } }), r.id);
+    }
+    if (!cols.includes("context")) this.db.run("ALTER TABLE threads ADD COLUMN context TEXT");
     // "default" was an alias for Opus; threads now name the model explicitly.
     this.db.run("UPDATE threads SET model = 'opus' WHERE model = 'default'");
     this.db.run("PRAGMA foreign_keys = ON");
@@ -77,13 +92,13 @@ export class Store {
     return r ? toThread(r) : undefined;
   }
 
-  createThread(projectId: string, model: string, effort: Effort): Thread {
+  createThread(projectId: string, provider: Provider, model: string, effort: Effort): Thread {
     const now = Date.now();
     const t: Thread = {
       id: crypto.randomUUID(),
       projectId,
       title: "New thread",
-      provider: "claude",
+      provider,
       model,
       effort,
       access: "full",
@@ -100,7 +115,7 @@ export class Store {
     return t;
   }
 
-  updateThread(id: string, patch: { title?: string; model?: string; effort?: Effort; access?: Access }) {
+  updateThread(id: string, patch: { title?: string; provider?: Provider; model?: string; effort?: Effort; access?: Access }) {
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined) continue;
       this.db.query(`UPDATE threads SET ${k} = ? WHERE id = ?`).run(v, id);
@@ -115,12 +130,21 @@ export class Store {
     this.db.query("UPDATE threads SET settled = ? WHERE id = ?").run(settled === null ? null : settled ? 1 : 0, id);
   }
 
-  sessionId(id: string): string | undefined {
-    return this.db.query<any, [string]>("SELECT session_id FROM threads WHERE id = ?").get(id)?.session_id ?? undefined;
+  session(id: string, provider: Provider): NativeSession {
+    const row = this.db.query<{ sessions: string }, [string]>("SELECT sessions FROM threads WHERE id = ?").get(id);
+    return (JSON.parse(row?.sessions ?? "{}") as Partial<Record<Provider, NativeSession>>)[provider] ?? {};
   }
 
-  setSessionId(id: string, sessionId: string) {
-    this.db.query("UPDATE threads SET session_id = ? WHERE id = ?").run(sessionId, id);
+  setSession(id: string, provider: Provider, patch: NativeSession) {
+    const row = this.db.query<{ sessions: string }, [string]>("SELECT sessions FROM threads WHERE id = ?").get(id);
+    if (!row) return;
+    const all = JSON.parse(row.sessions);
+    all[provider] = { ...all[provider], ...patch };
+    this.db.query("UPDATE threads SET sessions = ? WHERE id = ?").run(JSON.stringify(all), id);
+  }
+
+  setContext(id: string, context: { used: number; window: number }) {
+    this.db.query("UPDATE threads SET context = ? WHERE id = ?").run(JSON.stringify(context), id);
   }
 
   deleteThread(id: string) {
@@ -162,6 +186,7 @@ function toThread(r: any): Thread {
     effort: r.effort,
     access: r.access,
     status: "idle",
+    context: r.context ? JSON.parse(r.context) : undefined,
     settled: r.settled === null ? Date.now() - r.updated_at > AUTO_SETTLE_MS : r.settled === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

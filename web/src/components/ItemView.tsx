@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Streamdown } from "streamdown";
 import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
+import { ProviderMark } from "./Composer";
 
 const plugins = { code: createCodePlugin({ themes: ["github-light", "vitesse-dark"] }) };
 const controls = { code: { copy: true, download: false }, table: false };
@@ -20,6 +21,8 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
       return <Markdown text={item.text} streaming={streaming} />;
     case "turn":
       return <TurnEnd threadId={threadId} item={item} />;
+    case "handoff":
+      return <Handoff item={item} />;
     case "error":
       return (
         <div className="selectable my-3 rounded-xl border border-danger/25 bg-danger/[0.06] px-4 py-3 text-[13.5px] leading-relaxed text-danger">
@@ -49,7 +52,27 @@ function Markdown({ text, streaming }: { text: string; streaming: boolean }) {
   );
 }
 
+const AGENT = { claude: "Claude", codex: "Codex" } as const;
+
+// A quiet divider where the thread moved to another agent.
+function Handoff({ item }: { item: Of<"handoff"> }) {
+  return (
+    <div className="flex items-center gap-3 pt-7 pb-1 text-[12px] text-faint">
+      <span className="h-px flex-1 bg-line" />
+      <span className="flex items-center gap-1.5">
+        <ProviderMark provider={item.to} />
+        Switched to {AGENT[item.to]}
+        <span className="text-faint/70">
+          with {item.carried} {item.carried === 1 ? "entry" : "entries"} of context from {AGENT[item.from]}
+        </span>
+      </span>
+      <span className="h-px flex-1 bg-line" />
+    </div>
+  );
+}
+
 function UserMessage({ item }: { item: Of<"user"> }) {
+  const command = item.text.match(/^\/([\w:.-]+)(?:\s+([\s\S]*))?$/);
   return (
     <div className="flex justify-end pt-7 pb-3 first:pt-1">
       <div className="max-w-[80%] rounded-[18px] bg-raised px-4 py-2.5 ring-1 ring-line/60">
@@ -63,9 +86,35 @@ function UserMessage({ item }: { item: Of<"user"> }) {
             ))}
           </div>
         )}
-        <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">{item.text}</p>
+        {command ? (
+          <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">
+            <span className="mr-1.5 inline-flex items-center rounded-md bg-brass/15 px-1.5 py-px align-[1px] font-mono text-[12.5px] text-brass">
+              /{command[1]}
+            </span>
+            {command[2]}
+          </p>
+        ) : (
+          <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">
+            {withMentions(item.text)}
+          </p>
+        )}
       </div>
     </div>
+  );
+}
+
+// "@path" mentions read as file chips.
+function withMentions(text: string): React.ReactNode {
+  const parts = text.split(/((?:^|(?<=\s))@[^\s@]+)/g);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) =>
+    p.startsWith("@") ? (
+      <span key={i} className="rounded-md bg-hover px-1 py-px font-mono text-[12.5px] text-ink/90" title={p.slice(1)}>
+        {p.slice(1).split("/").pop()}
+      </span>
+    ) : (
+      p
+    ),
   );
 }
 
@@ -182,6 +231,27 @@ function ToolDetail({ tool }: { tool: Tool }) {
             </div>
           ))}
         </div>
+      ) : tool.name === "Patch" && Array.isArray(input.changes) ? (
+        <div className="max-h-96 overflow-auto py-1.5">
+          {input.changes.map((c: { path: string; diff?: string }, ci: number) => (
+            <div key={ci}>
+              <div className="px-3 pt-1 pb-0.5 text-faint">{c.path}</div>
+              {(c.diff ?? "")
+                .split("\n")
+                .filter((l) => !/^(diff --git|index |--- |\+\+\+ )/.test(l))
+                .map((l, i) => (
+                  <div
+                    key={i}
+                    className={`px-3 whitespace-pre ${
+                      l.startsWith("+") ? "bg-ok/[0.07] text-ok" : l.startsWith("-") ? "bg-danger/[0.07] text-danger/90" : l.startsWith("@@") ? "text-faint" : "text-dim"
+                    }`}
+                  >
+                    {l || " "}
+                  </div>
+                ))}
+            </div>
+          ))}
+        </div>
       ) : tool.name === "Write" && typeof input.content === "string" ? (
         <pre className="max-h-72 overflow-auto px-3 py-2 whitespace-pre-wrap text-dim">{input.content}</pre>
       ) : (
@@ -218,6 +288,10 @@ function present(tool: Tool): { verb: string; target?: string } {
       return { verb: v("Editing", "Edited"), target: file(input.file_path) };
     case "Write":
       return { verb: v("Writing", "Wrote"), target: file(input.file_path) };
+    case "Patch": {
+      const paths: string[] = (input.changes ?? []).map((c: { path: string }) => c.path);
+      return { verb: v("Editing", "Edited"), target: paths.length > 1 ? `${paths.length} files` : file(paths[0]) };
+    }
     case "Grep":
       return { verb: v("Searching", "Searched"), target: input.pattern };
     case "Glob":
@@ -246,6 +320,7 @@ function summarize(items: Item[]): string {
     else if (i.name === "Grep" || i.name === "Glob") count.search++;
     else if (i.name === "Write") count.write++;
     else if (i.name === "Edit" || i.name === "MultiEdit") count.edit++;
+    else if (i.name === "Patch") count.edit += Math.max(1, ((i.input as any)?.changes ?? []).length);
     else if (i.name === "Bash") count.run++;
     else if (i.name === "WebFetch" || i.name === "WebSearch") count.web++;
     else count.other++;

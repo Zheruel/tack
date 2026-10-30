@@ -6,6 +6,8 @@ import type {
   Access,
   ApprovalRequest,
   Attachment,
+  CliName,
+  CliStatus,
   Effort,
   Event,
   Item,
@@ -43,6 +45,9 @@ interface State {
   // Threads whose turn finished while you were looking elsewhere.
   unread: Record<string, true>;
   showSettled: boolean;
+  clis: Partial<Record<CliName, CliStatus>>;
+  // The right-hand panel with branch, PR and context.
+  panel: boolean;
 }
 
 export const useApp = create<State>(() => ({
@@ -55,6 +60,8 @@ export const useApp = create<State>(() => ({
   approvals: {},
   unread: load("tack.unread", {}),
   showSettled: false,
+  clis: {},
+  panel: load("tack.panel", true),
 }));
 
 const set = useApp.setState;
@@ -145,6 +152,12 @@ export function setShowSettled(show: boolean) {
   set({ showSettled: show });
 }
 
+export function togglePanel() {
+  const panel = !get().panel;
+  save("tack.panel", panel);
+  set({ panel });
+}
+
 // ---- server sync
 
 function apply(e: Event) {
@@ -205,6 +218,8 @@ function apply(e: Event) {
       return set((s) => ({ queues: { ...s.queues, [e.threadId]: e.queue } }));
     case "approval":
       return set((s) => ({ approvals: { ...s.approvals, [e.request.id]: e.request } }));
+    case "cli":
+      return set((s) => ({ clis: { ...s.clis, [e.status.name]: e.status } }));
     case "approval.resolved":
       return set((s) => {
         const { [e.approvalId]: _, ...approvals } = s.approvals;
@@ -216,8 +231,14 @@ function apply(e: Event) {
 export function startSync() {
   onEvent(apply);
   onConnect(async () => {
-    const { projects, threads, models } = await call("state.get", {});
-    set({ ready: true, projects, threads: Object.fromEntries(threads.map((t) => [t.id, t])), models });
+    const { projects, threads, models, clis } = await call("state.get", {});
+    set({
+      ready: true,
+      projects,
+      threads: Object.fromEntries(threads.map((t) => [t.id, t])),
+      models,
+      clis: Object.fromEntries(clis.map((c) => [c.name, c])),
+    });
     // Launch on a new thread. On a reconnect, stay where you were.
     const active = get().activeThreadId;
     if (active && get().threads[active]) await openThread(active);

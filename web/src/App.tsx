@@ -1,12 +1,13 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, FolderPlus } from "lucide-react";
+import { ChevronDown, FolderPlus, PanelRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Composer, MenuContent, MenuItem } from "./components/Composer";
+import { Panel } from "./components/Panel";
 import { addProject, Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { openExternal } from "./native";
 import { call } from "./rpc";
-import { startDraft, updateDraft, useApp } from "./store";
+import { startDraft, togglePanel, updateDraft, useApp } from "./store";
 
 export function App() {
   const ready = useApp((s) => s.ready);
@@ -14,6 +15,7 @@ export function App() {
   const hasThread = useApp((s) => !!(activeId && s.threads[activeId]));
   const drafting = useApp((s) => !!s.draft);
   const hasProjects = useApp((s) => s.projects.length > 0);
+  const panel = useApp((s) => s.panel);
 
   useShortcuts();
 
@@ -46,6 +48,7 @@ export function App() {
           </div>
         )}
       </main>
+      {hasThread && panel && <Panel threadId={activeId!} />}
     </div>
   );
 }
@@ -104,6 +107,7 @@ function ProjectPicker() {
 function Header({ threadId }: { threadId: string }) {
   const thread = useApp((s) => s.threads[threadId])!;
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
+  const panel = useApp((s) => s.panel);
   const [editing, setEditing] = useState(false);
 
   const rename = (title: string) => {
@@ -138,6 +142,13 @@ function Header({ threadId }: { threadId: string }) {
           {project.name}
         </span>
       )}
+      <button
+        onClick={togglePanel}
+        title="Toggle details (⌘\)"
+        className={`ml-auto shrink-0 rounded-lg p-1.5 transition-colors hover:bg-hover hover:text-ink ${panel ? "text-dim" : "text-faint"}`}
+      >
+        <PanelRight size={15} strokeWidth={1.75} />
+      </button>
     </header>
   );
 }
@@ -152,6 +163,9 @@ function useShortcuts() {
       } else if (e.key === "n") {
         e.preventDefault();
         startDraft();
+      } else if (e.key === "\\") {
+        e.preventDefault();
+        togglePanel();
       }
     };
     // Links in agent output open in the default browser.

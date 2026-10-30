@@ -2,27 +2,8 @@
 // Maps SDK messages onto provider-neutral transcript items.
 
 import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Access, Attachment, Effort, Item, ModelOption } from "../shared/protocol";
-
-export interface SessionEvents {
-  // `final` items are complete and safe to persist; others are still streaming.
-  item(item: Item, final: boolean): void;
-  delta(itemId: string, text: string): void;
-  sessionId(id: string): void;
-  turnEnd(): void;
-  closed(error?: string): void;
-  approve(tool: string, input: unknown, signal: AbortSignal): Promise<boolean>;
-}
-
-export interface SessionOptions {
-  cwd: string;
-  model: string;
-  effort: Effort;
-  access: Access;
-  resume?: string;
-  claudePath?: string;
-  env: Record<string, string>;
-}
+import type { Attachment, Command, Item, ModelOption } from "../shared/protocol";
+import type { AgentSession, SessionEvents, SessionOptions } from "./session";
 
 class Inbox implements AsyncIterable<SDKUserMessage> {
   private buffer: SDKUserMessage[] = [];
@@ -55,7 +36,8 @@ interface OpenBlock {
   shown: boolean; // thinking is only shown once it has text (it is often redacted)
 }
 
-export class ClaudeSession {
+export class ClaudeSession implements AgentSession {
+  readonly provider = "claude";
   private inbox = new Inbox();
   private q: Query;
   private abort = new AbortController();
@@ -65,6 +47,8 @@ export class ClaudeSession {
   private messageId = "";
   private turnStart = 0;
   private interrupted = false;
+  private prompt = 0; // tokens sent in the latest request, cache included
+  private context = 0; // ...plus what the model wrote back
   closed = false;
 
   constructor(opts: SessionOptions, private events: SessionEvents) {
@@ -73,9 +57,9 @@ export class ClaudeSession {
       options: {
         cwd: opts.cwd,
         model: opts.model,
-        effort: opts.effort,
+        effort: opts.effort === "ultra" ? "max" : opts.effort, // Codex-only level
         resume: opts.resume,
-        pathToClaudeCodeExecutable: opts.claudePath,
+        pathToClaudeCodeExecutable: opts.bin,
         env: opts.env,
         abortController: this.abort,
         includePartialMessages: true,
@@ -121,6 +105,7 @@ export class ClaudeSession {
     const list = (await this.q.supportedModels()).filter((m) => m.value !== "default");
     const rank = ["fable", "opus", "sonnet", "haiku"];
     const options = list.map((m): ModelOption => ({
+      provider: "claude",
       value: m.value,
       label: m.displayName,
       description: m.description,
@@ -134,6 +119,15 @@ export class ClaudeSession {
         ? a.group === "latest" ? -1 : 1
         : a.group === "latest" ? rank.indexOf(a.value) - rank.indexOf(b.value) : version(b) - version(a),
     );
+  }
+
+  async commands(): Promise<Command[]> {
+    return (await this.q.supportedCommands()).map((c) => ({
+      name: c.name,
+      description: c.description,
+      hint: c.argumentHint || undefined,
+      kind: "command",
+    }));
   }
 
   close() {
@@ -177,6 +171,8 @@ export class ClaudeSession {
             ? undefined
             : (msg as any).errors?.join("\n") || msg.subtype.replaceAll("_", " ");
         this.interrupted = false;
+        const window = Math.max(0, ...Object.values((msg as any).modelUsage ?? {}).map((u: any) => u.contextWindow ?? 0));
+        if (this.context && window) this.events.usage(this.context, window);
         this.events.item(
           { id: crypto.randomUUID(), kind: "turn", durationMs: Date.now() - (this.turnStart || Date.now()), error, ts: Date.now() },
           true,
@@ -189,9 +185,15 @@ export class ClaudeSession {
 
   private stream(ev: any) {
     switch (ev.type) {
-      case "message_start":
+      case "message_start": {
         this.messageId = ev.message.id;
         this.streamed.add(ev.message.id);
+        const u = ev.message.usage ?? {};
+        this.prompt = this.context = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        return;
+      }
+      case "message_delta":
+        this.context = this.prompt + (ev.usage?.output_tokens ?? 0); // cumulative per message
         return;
       case "content_block_start": {
         const b = ev.content_block;

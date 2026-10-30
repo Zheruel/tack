@@ -2,16 +2,21 @@
 
 import { readFileSync } from "node:fs";
 import { ClaudeSession } from "./claude";
+import { CodexSession } from "./codex";
+import { handoff } from "./handoff";
+import { noEvents, type AgentSession, type SessionEvents, type SessionOptions } from "./session";
 import type { Store } from "./store";
 import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../shared/protocol";
 import type {
   Access,
   ApprovalRequest,
   Attachment,
+  Command,
   Effort,
   Event,
   Item,
   ModelOption,
+  Provider,
   Queued,
   Thread,
   ThreadStatus,
@@ -19,9 +24,14 @@ import type {
 
 const DELTA_FLUSH_MS = 33;
 const IDLE_CLOSE_MS = 15 * 60_000;
+const COMMANDS_TTL_MS = 2 * 60_000;
+
+function createSession(provider: Provider, opts: SessionOptions, events: SessionEvents): AgentSession {
+  return provider === "codex" ? new CodexSession(opts, events) : new ClaudeSession(opts, events);
+}
 
 interface Live {
-  session?: ClaudeSession;
+  session?: AgentSession;
   stale?: boolean; // options changed that need a fresh process; applied on next send
   status: ThreadStatus;
   queue: Queued[];
@@ -39,12 +49,13 @@ interface PendingApproval {
 export class Hub {
   private live = new Map<string, Live>();
   private approvals = new Map<string, PendingApproval>();
+  private commandCache = new Map<string, { at: number; list: Promise<Command[]> }>();
   models: ModelOption[] = [];
 
   constructor(
     private store: Store,
     private broadcast: (e: Event) => void,
-    private env: { claudePath?: string; vars: Record<string, string> },
+    private env: { bins: Partial<Record<Provider, string>>; vars: Record<string, string> },
   ) {
     setInterval(() => this.reapIdle(), 60_000).unref();
   }
@@ -71,17 +82,49 @@ export class Hub {
     };
   }
 
-  defaultModel(): { model: string; effort: Effort } {
-    return { model: DEFAULT_MODEL, effort: DEFAULT_EFFORT };
+  defaultModel(): { provider: Provider; model: string; effort: Effort } {
+    return { provider: "claude", model: DEFAULT_MODEL, effort: DEFAULT_EFFORT };
+  }
+
+  providerOf(model: string): Provider {
+    return this.models.find((m) => m.value === model)?.provider ?? (/^(gpt|o\d|codex)/.test(model) ? "codex" : "claude");
+  }
+
+  // Slash commands and skills for a project, from a short-lived probe session (cached briefly).
+  commands(projectId: string, provider: Provider): Promise<Command[]> {
+    const project = this.store.project(projectId);
+    if (!project) return Promise.resolve([]);
+    const key = `${provider}:${project.path}`;
+    const hit = this.commandCache.get(key);
+    if (hit && Date.now() - hit.at < COMMANDS_TTL_MS) return hit.list;
+    const probe = createSession(provider, this.probeOptions(provider, project.path), noEvents);
+    const list = probe.commands().finally(() => probe.close());
+    list.catch(() => this.commandCache.delete(key));
+    this.commandCache.set(key, { at: Date.now(), list });
+    return list;
+  }
+
+  // A CLI was updated: running sessions keep their old process until their next message.
+  restartProvider(provider: Provider) {
+    for (const live of this.live.values()) {
+      if (live.session?.provider !== provider) continue;
+      if (live.status === "running") live.stale = true;
+      else live.session.close();
+    }
+    for (const key of this.commandCache.keys()) if (key.startsWith(provider)) this.commandCache.delete(key);
+    this.loadModels().catch(() => {});
   }
 
   // ---- writes
 
   async configure(threadId: string, patch: { model?: string; effort?: Effort; access?: Access }) {
-    this.store.updateThread(threadId, patch);
+    const before = this.store.thread(threadId);
+    const provider = patch.model ? this.providerOf(patch.model) : before?.provider;
+    this.store.updateThread(threadId, { ...patch, provider });
     const live = this.live.get(threadId);
     if (live?.session && !live.session.closed) {
-      if (patch.model) await live.session.setModel(patch.model).catch(() => {});
+      // Switching provider is handled on the next send, which hands the thread over.
+      if (patch.model && provider === live.session.provider) await live.session.setModel(patch.model).catch(() => {});
       // Effort and access are fixed per process; the next send resumes with the new values.
       if (patch.effort || patch.access) live.stale = true;
     }
@@ -142,18 +185,28 @@ export class Hub {
     for (const [id, a] of this.approvals) if (a.request.threadId === threadId) this.answer(id, false);
   }
 
-  // Ask Claude for its model list once, without sending a prompt.
+  // Ask each installed CLI for its models, without sending a prompt.
   async loadModels() {
-    const probe = new ClaudeSession(
-      { cwd: process.env.HOME ?? "/", model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, access: "full", claudePath: this.env.claudePath, env: this.env.vars },
-      { item() {}, delta() {}, sessionId() {}, turnEnd() {}, closed() {}, approve: async () => false },
+    const providers = (["claude", "codex"] as const).filter((p) => this.env.bins[p]);
+    const lists = await Promise.all(
+      providers.map(async (provider) => {
+        const probe = createSession(provider, this.probeOptions(provider, process.env.HOME ?? "/"), noEvents);
+        try {
+          return await probe.models();
+        } catch (e) {
+          console.error(`tack: could not load ${provider} models:`, e instanceof Error ? e.message : e);
+          return this.models.filter((m) => m.provider === provider);
+        } finally {
+          probe.close();
+        }
+      }),
     );
-    try {
-      this.models = await probe.models();
-      this.broadcast({ type: "models", models: this.models });
-    } finally {
-      probe.close();
-    }
+    this.models = lists.flat();
+    this.broadcast({ type: "models", models: this.models });
+  }
+
+  private probeOptions(provider: Provider, cwd: string): SessionOptions {
+    return { cwd, model: provider === "claude" ? DEFAULT_MODEL : "", effort: DEFAULT_EFFORT, access: "full", bin: this.env.bins[provider], env: this.env.vars };
   }
 
   // ---- internals
@@ -163,6 +216,19 @@ export class Hub {
     const project = thread && this.store.project(thread.projectId);
     if (!thread || !project) return;
     const live = this.state(threadId);
+    const provider = thread.provider;
+
+    // Whatever this provider missed while another one had the thread goes ahead of the message.
+    const history = this.store.items(threadId);
+    const native = this.store.session(threadId, provider);
+    const missed = history.slice(native.seen ?? (native.id ? history.length : 0));
+    const from: Provider = provider === "claude" ? "codex" : "claude";
+    const carry = missed.length ? handoff(missed, from) : undefined;
+    if (carry) {
+      const marker: Item = { id: crypto.randomUUID(), kind: "handoff", from, to: provider, carried: carry.carried, ts: Date.now() };
+      this.store.appendItem(threadId, marker);
+      this.broadcast({ type: "item", threadId, item: marker });
+    }
 
     const user: Item = {
       id: queued.id,
@@ -176,34 +242,43 @@ export class Hub {
     this.broadcast({ type: "item", threadId, item: user });
     if (thread.title === "New thread" && queued.text.trim()) this.store.updateThread(threadId, { title: titleFrom(queued.text) });
 
-    if (live.stale) {
+    if (live.stale || (live.session && live.session.provider !== provider)) {
       live.session?.close();
       live.session = undefined;
       live.stale = false;
     }
     if (!live.session || live.session.closed) {
-      const session: ClaudeSession = new ClaudeSession(
-        {
-          cwd: project.path,
-          model: thread.model,
-          effort: thread.effort,
-          access: thread.access,
-          resume: this.store.sessionId(threadId),
-          claudePath: this.env.claudePath,
-          env: this.env.vars,
-        },
-        this.sessionEvents(threadId, () => session),
-      );
-      live.session = session;
+      try {
+        const session: AgentSession = createSession(
+          provider,
+          {
+            cwd: project.path,
+            model: thread.model,
+            effort: thread.effort,
+            access: thread.access,
+            resume: native.id,
+            bin: this.env.bins[provider],
+            env: this.env.vars,
+          },
+          this.sessionEvents(threadId, provider, () => session),
+        );
+        live.session = session;
+      } catch (e) {
+        const item: Item = { id: crypto.randomUUID(), kind: "error", text: e instanceof Error ? e.message : String(e), ts: Date.now() };
+        this.store.appendItem(threadId, item);
+        this.broadcast({ type: "item", threadId, item });
+        return;
+      }
     }
-    live.session.send(...resolveAttachments(queued.text, queued.attachments));
+    const [text, images] = resolveAttachments(queued.text, queued.attachments);
+    live.session.send((carry?.text ?? "") + text, images);
     live.status = "running";
     live.lastActive = Date.now();
     this.store.touch(threadId);
     this.emitThread(threadId);
   }
 
-  private sessionEvents(threadId: string, self: () => ClaudeSession) {
+  private sessionEvents(threadId: string, provider: Provider, self: () => AgentSession): SessionEvents {
     const live = () => this.state(threadId);
     return {
       item: (item: Item, final: boolean) => {
@@ -222,10 +297,15 @@ export class Hub {
         l.deltas.set(itemId, (l.deltas.get(itemId) ?? "") + text);
         l.flush ??= setTimeout(() => this.flushDeltas(threadId), DELTA_FLUSH_MS);
       },
-      sessionId: (id: string) => this.store.setSessionId(threadId, id),
+      sessionId: (id: string) => this.store.setSession(threadId, provider, { id }),
+      usage: (used: number, window: number) => {
+        this.store.setContext(threadId, { used, window });
+        this.emitThread(threadId);
+      },
       turnEnd: () => {
         const l = live();
         this.flushDeltas(threadId);
+        this.store.setSession(threadId, provider, { seen: this.store.items(threadId).length });
         l.status = "idle";
         l.lastActive = Date.now();
         this.store.touch(threadId);
@@ -250,7 +330,7 @@ export class Hub {
       },
       approve: (tool: string, input: unknown, signal: AbortSignal) =>
         new Promise<boolean>((resolve) => {
-          const request: ApprovalRequest = { id: crypto.randomUUID(), threadId, tool, input };
+          const request: ApprovalRequest = { id: crypto.randomUUID(), threadId, provider, tool, input };
           this.approvals.set(request.id, { request, resolve });
           signal.addEventListener("abort", () => this.answer(request.id, false), { once: true });
           this.broadcast({ type: "approval", request });

@@ -7,8 +7,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
+import { Git } from "./git";
 import { Hub } from "./hub";
 import { Store } from "./store";
+import { Updates } from "./updates";
 import type { ClientFrame, Event, Requests, ServerFrame } from "../shared/protocol";
 
 const dev = process.env.TACK_DEV === "1";
@@ -28,7 +30,10 @@ async function loginPath(): Promise<string> {
 }
 
 const PATH = await loginPath();
-const claudePath = Bun.which("claude", { PATH }) ?? undefined;
+const bins = {
+  claude: Bun.which("claude", { PATH }) ?? undefined,
+  codex: Bun.which("codex", { PATH }) ?? undefined,
+};
 const vars: Record<string, string> = { ...(process.env as Record<string, string>), PATH };
 delete vars.TACK_DEV;
 delete vars.TACK_PORT;
@@ -39,12 +44,30 @@ const broadcast = (event: Event) => {
   const frame = JSON.stringify({ event } satisfies ServerFrame);
   for (const ws of sockets) ws.send(frame);
 };
-const hub = new Hub(store, broadcast, { claudePath, vars });
+const hub = new Hub(store, broadcast, { bins, vars });
+const git = new Git(vars);
+const updates = new Updates(
+  bins,
+  vars,
+  (status) => broadcast({ type: "cli", status }),
+  (name) => hub.restartProvider(name),
+);
+
+const projectPath = (projectId: string) => {
+  const project = store.project(projectId);
+  if (!project) throw new Error("Project not found");
+  return project.path;
+};
 
 type Handlers = { [M in keyof Requests]: (p: Requests[M]["params"]) => Promise<Requests[M]["result"]> | Requests[M]["result"] };
 
 const handlers: Handlers = {
-  "state.get": () => ({ projects: store.projects(), threads: hub.threads(), models: hub.models }),
+  "state.get": () => ({
+    projects: store.projects(),
+    threads: hub.threads(),
+    models: hub.models,
+    clis: Object.values(updates.status),
+  }),
   "project.add": ({ path }) => {
     if (!existsSync(path)) throw new Error(`No such folder: ${path}`);
     const project = store.addProject(path.replace(/\/+$/, ""));
@@ -60,8 +83,8 @@ const handlers: Handlers = {
     return null;
   },
   "thread.create": ({ projectId }) => {
-    const { model, effort } = hub.defaultModel();
-    const thread = store.createThread(projectId, model, effort);
+    const { provider, model, effort } = hub.defaultModel();
+    const thread = store.createThread(projectId, provider, model, effort);
     broadcast({ type: "thread.upserted", thread });
     return thread;
   },
@@ -87,6 +110,10 @@ const handlers: Handlers = {
   "chat.steer": ({ threadId, queuedId }) => (hub.steer(threadId, queuedId), null),
   "chat.interrupt": async ({ threadId }) => (await hub.interrupt(threadId), null),
   "approval.answer": ({ approvalId, allow }) => (hub.answer(approvalId, allow), null),
+  "commands.list": ({ projectId, provider }) => hub.commands(projectId, provider),
+  "files.search": ({ projectId, query }) => git.search(projectPath(projectId), query),
+  "git.info": ({ projectId }) => git.info(projectPath(projectId)),
+  "cli.update": ({ name }) => (updates.update(name), null),
 };
 
 const server = Bun.serve({
@@ -123,9 +150,9 @@ const server = Bun.serve({
 
 // The Tauri shell reads this line to learn where to connect.
 console.log(`TACK_READY ${JSON.stringify({ port: server.port, token })}`);
-if (!claudePath) console.error("tack: `claude` not found on PATH");
+if (!bins.claude && !bins.codex) console.error("tack: neither `claude` nor `codex` found on PATH");
 
-hub.loadModels().catch((e) => console.error("tack: could not load Claude models:", e.message));
+hub.loadModels().catch((e) => console.error("tack: could not load models:", e.message));
 
 // Exit with the parent (Tauri closes our stdin when it quits).
 if (!dev) {

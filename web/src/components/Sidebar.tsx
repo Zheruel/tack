@@ -1,6 +1,7 @@
-import { Check, ChevronRight, RotateCcw, SquarePen, Trash2 } from "lucide-react";
-import { useState } from "react";
-import type { Thread } from "../../../shared/protocol";
+import * as Ctx from "@radix-ui/react-context-menu";
+import { ArrowDown, Check, ChevronRight, RotateCcw, SquarePen } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { CliName, CliStatus, Thread } from "../../../shared/protocol";
 import { pickFolder } from "../native";
 import { call } from "../rpc";
 import { openThread, setShowSettled, startDraft, useApp } from "../store";
@@ -19,7 +20,6 @@ export function Sidebar() {
   const threads = useApp((s) => s.threads);
   const approvals = useApp((s) => s.approvals);
   const unread = useApp((s) => s.unread);
-  const showSettled = useApp((s) => s.showSettled);
   const drafting = useApp((s) => !!s.draft);
   const hasProjects = useApp((s) => s.projects.length > 0);
 
@@ -53,25 +53,15 @@ export function Sidebar() {
         <Group title="Needs you" threads={sections.attention} />
         <Group title="Working" threads={sections.working} />
         <Group title="Active" threads={sections.active} />
-        {sections.settled.length > 0 && (
-          <div className="mt-4">
-            <button
-              onClick={() => setShowSettled(!showSettled)}
-              className="flex h-6 w-full items-center gap-1 px-2.5 text-[11.5px] font-medium text-faint hover:text-dim"
-            >
-              Settled
-              <span className="font-normal">{sections.settled.length}</span>
-              <ChevronRight size={12} className={`ml-auto transition-transform ${showSettled ? "rotate-90" : ""}`} />
-            </button>
-            {showSettled && sections.settled.map((t) => <ThreadRow key={t.id} thread={t} />)}
-          </div>
-        )}
         {Object.keys(threads).length === 0 && (
           <p className="px-2.5 py-2 text-[12.5px] leading-relaxed text-faint">
             {hasProjects ? "Threads you start show up here." : "Add a project folder to start."}
           </p>
         )}
       </nav>
+
+      <Settled threads={sections.settled} />
+      <Updates />
     </aside>
   );
 }
@@ -88,12 +78,40 @@ function Group({ title, threads }: { title: string; threads: Thread[] }) {
   );
 }
 
+// Pinned to the bottom of the rail; opens upward into its own scroll area.
+function Settled({ threads }: { threads: Thread[] }) {
+  const open = useApp((s) => s.showSettled);
+  if (!threads.length) return null;
+  return (
+    <div className="shrink-0 border-t border-line/60 px-2.5 pt-1.5 pb-1.5">
+      <button
+        onClick={() => setShowSettled(!open)}
+        className="flex h-7 w-full items-center gap-1.5 rounded-lg px-2.5 text-[12px] text-faint transition-colors hover:text-dim"
+      >
+        <ChevronRight size={12} className={`transition-transform duration-200 ${open ? "rotate-90" : ""}`} />
+        Settled
+        <span className="ml-auto tabular-nums">{threads.length}</span>
+      </button>
+      <div
+        className={`grid transition-[grid-template-rows] duration-200 ease-out ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}
+      >
+        <div className="max-h-[38vh] min-h-0 overflow-y-auto">
+          {threads.map((t) => (
+            <ThreadRow key={t.id} thread={t} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ThreadRow({ thread }: { thread: Thread }) {
   const active = useApp((s) => s.activeThreadId === thread.id);
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
   const waiting = useApp((s) => Object.values(s.approvals).some((a) => a.threadId === thread.id));
   const unread = useApp((s) => !!s.unread[thread.id]);
-  const [confirming, setConfirming] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const status = waiting
     ? { dot: "bg-brass", label: "Needs approval" }
@@ -105,56 +123,179 @@ function ThreadRow({ thread }: { thread: Thread }) {
           ? { dot: "bg-ink", label: "Finished" }
           : null;
 
-  const settle = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    call("thread.settle", { threadId: thread.id, settled: !thread.settled });
-  };
-  const remove = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirming) return setConfirming(true);
-    call("thread.delete", { threadId: thread.id });
+  const settle = () => call("thread.settle", { threadId: thread.id, settled: !thread.settled });
+  const rename = (title: string) => {
+    setRenaming(false);
+    if (title.trim() && title !== thread.title) call("thread.rename", { threadId: thread.id, title });
   };
 
   return (
-    <div
-      onClick={() => openThread(thread.id)}
-      onMouseLeave={() => setConfirming(false)}
-      className={`group relative flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] transition-colors ${
-        active ? "bg-hover" : "hover:bg-hover/50"
+    <Ctx.Root onOpenChange={(open) => !open && setConfirmDelete(false)}>
+      <Ctx.Trigger asChild>
+        <div
+          onClick={() => !renaming && openThread(thread.id)}
+          className={`group relative flex items-center gap-2.5 rounded-lg px-2.5 py-[7px] transition-colors data-[state=open]:bg-hover/70 ${
+            active ? "bg-hover" : "hover:bg-hover/50"
+          }`}
+        >
+          <div className="min-w-0 flex-1">
+            {renaming ? (
+              <input
+                autoFocus
+                defaultValue={thread.title}
+                onClick={(e) => e.stopPropagation()}
+                onFocus={(e) => e.currentTarget.select()}
+                onBlur={(e) => rename(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") rename(e.currentTarget.value);
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+                className="-mx-1 w-[calc(100%+8px)] rounded bg-canvas px-1 text-[13px] leading-snug text-ink outline-none ring-1 ring-brass/50"
+              />
+            ) : (
+              <div
+                className={`truncate text-[13px] leading-snug group-hover:pr-6 ${
+                  active || unread || waiting ? "text-ink" : "text-dim group-hover:text-ink"
+                } ${unread ? "font-medium" : ""}`}
+              >
+                {thread.title}
+              </div>
+            )}
+            <div className="mt-px flex items-center gap-1.5 text-[11.5px] leading-snug text-faint">
+              {status && <span className={`size-1.5 shrink-0 rounded-full ${status.dot}`} />}
+              <span className="truncate">{status ? status.label : project?.name}</span>
+              {status && project && <span className="truncate opacity-70">{project.name}</span>}
+              <span className="ml-auto shrink-0 group-hover:invisible">{ago(thread.updatedAt)}</span>
+            </div>
+          </div>
+          {!renaming && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                settle();
+              }}
+              title={thread.settled ? "Move back to active" : "Settle"}
+              className="absolute top-1/2 right-1.5 hidden -translate-y-1/2 rounded-md p-1 text-faint group-hover:block hover:bg-line/60 hover:text-ink"
+            >
+              {thread.settled ? <RotateCcw size={13} /> : <Check size={13} />}
+            </button>
+          )}
+        </div>
+      </Ctx.Trigger>
+      <Ctx.Portal>
+        <Ctx.Content className="z-50 min-w-44 rounded-xl border border-line bg-raised p-1 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]">
+          <CtxItem onSelect={() => setTimeout(() => setRenaming(true), 0)}>Rename</CtxItem>
+          <CtxItem onSelect={settle}>{thread.settled ? "Move back to active" : "Settle"}</CtxItem>
+          <Ctx.Separator className="mx-2 my-1 h-px bg-line" />
+          <CtxItem
+            danger
+            onSelect={(e) => {
+              if (!confirmDelete) {
+                e.preventDefault(); // keep the menu open for the second click
+                setConfirmDelete(true);
+              } else call("thread.delete", { threadId: thread.id });
+            }}
+          >
+            {confirmDelete ? "Click again to delete" : "Delete"}
+          </CtxItem>
+        </Ctx.Content>
+      </Ctx.Portal>
+    </Ctx.Root>
+  );
+}
+
+function CtxItem({
+  children,
+  danger,
+  onSelect,
+}: {
+  children: React.ReactNode;
+  danger?: boolean;
+  onSelect: (e: Event) => void;
+}) {
+  return (
+    <Ctx.Item
+      onSelect={onSelect}
+      className={`flex h-8 cursor-default items-center rounded-lg px-2.5 text-[13px] outline-none ${
+        danger ? "text-danger data-highlighted:bg-danger/10" : "text-ink data-highlighted:bg-hover"
       }`}
     >
-      <div className="min-w-0 flex-1">
-        <div
-          className={`truncate text-[13px] leading-snug group-hover:pr-14 ${
-            active || unread || waiting ? "text-ink" : "text-dim group-hover:text-ink"
-          } ${unread ? "font-medium" : ""}`}
-        >
-          {thread.title}
-        </div>
-        <div className="mt-px flex items-center gap-1.5 text-[11.5px] leading-snug text-faint">
-          {status && <span className={`size-1.5 shrink-0 rounded-full ${status.dot}`} />}
-          <span className="truncate">{status ? status.label : project?.name}</span>
-          {status && project && <span className="truncate opacity-70">{project.name}</span>}
-          <span className="ml-auto shrink-0 group-hover:invisible">{ago(thread.updatedAt)}</span>
-        </div>
-      </div>
-      <div className="absolute top-1/2 right-1.5 hidden -translate-y-1/2 items-center gap-0.5 rounded-md bg-hover pl-1 group-hover:flex">
-        <button
-          onClick={settle}
-          title={thread.settled ? "Move back to active" : "Settle"}
-          className="rounded-md p-1 text-faint hover:text-ink"
-        >
-          {thread.settled ? <RotateCcw size={13} /> : <Check size={13} />}
-        </button>
-        <button
-          onClick={remove}
-          title={confirming ? "Click again to delete" : "Delete"}
-          className={`rounded-md p-1 ${confirming ? "text-danger" : "text-faint hover:text-ink"}`}
-        >
-          <Trash2 size={13} />
-        </button>
-      </div>
+      {children}
+    </Ctx.Item>
+  );
+}
+
+// ---- CLI updates
+
+const CLI_NAMES: Record<CliName, string> = { claude: "Claude Code", codex: "Codex" };
+
+// One card per CLI with a newer release. Click to update; it confirms, then gets out of the way.
+function Updates() {
+  const clis = useApp((s) => s.clis);
+  const [done, setDone] = useState<Partial<Record<CliName, string>>>({});
+  const prev = useRef(clis);
+
+  useEffect(() => {
+    for (const c of Object.values(clis)) {
+      if (prev.current[c.name]?.state === "updating" && c.state === "current") {
+        setDone((d) => ({ ...d, [c.name]: c.installed }));
+        setTimeout(() => setDone(({ [c.name]: _, ...rest }) => rest), 3500);
+      }
+    }
+    prev.current = clis;
+  }, [clis]);
+
+  const shown = Object.values(clis).filter((c) => c.state === "available" || c.state === "updating" || done[c.name]);
+  if (!shown.length) return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-1.5 px-2.5 pt-1 pb-3">
+      {shown.map((c) => (
+        <UpdateCard key={c.name} cli={c} doneVersion={done[c.name]} />
+      ))}
     </div>
+  );
+}
+
+function UpdateCard({ cli, doneVersion }: { cli: CliStatus; doneVersion?: string }) {
+  const updating = cli.state === "updating";
+  const finished = !!doneVersion && cli.state === "current";
+  const name = CLI_NAMES[cli.name];
+
+  return (
+    <button
+      disabled={updating || finished}
+      onClick={() => call("cli.update", { name: cli.name })}
+      title={cli.error ? `Last attempt failed: ${cli.error}` : `Update ${name} to ${cli.latest}. Idle chats restart on it.`}
+      className="update-card group relative flex w-full items-center gap-3 overflow-hidden rounded-xl border border-brass/25 bg-[linear-gradient(135deg,rgba(201,163,91,0.13),rgba(201,163,91,0.04)_60%)] px-3 py-2.5 text-left transition-[border-color,transform] duration-200 hover:border-brass/50 active:scale-[0.985] disabled:active:scale-100"
+    >
+      <span
+        className={`relative flex size-7 shrink-0 items-center justify-center rounded-full transition-colors duration-300 ${
+          finished ? "bg-ok/20 text-ok" : "bg-brass/15 text-brass"
+        }`}
+      >
+        {finished ? (
+          <Check size={14} strokeWidth={2.5} className="pop" />
+        ) : (
+          <ArrowDown size={14} strokeWidth={2.25} className={updating ? "nudge" : "transition-transform group-hover:translate-y-[1px]"} />
+        )}
+        {updating && <span className="spin-ring absolute inset-0 rounded-full" />}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12.5px] font-medium text-ink">
+          {finished ? `${name} updated` : updating ? `Updating ${name}…` : `${name} ${cli.latest}`}
+        </span>
+        <span className={`block truncate text-[11.5px] ${cli.error && !updating ? "text-danger/90" : "text-dim"}`}>
+          {finished
+            ? `Now on ${doneVersion}`
+            : updating
+              ? `${cli.installed} → ${cli.latest}`
+              : cli.error
+                ? "Update failed. Click to retry"
+                : "Update available. Click to install"}
+        </span>
+      </span>
+      {updating && <span className="shimmer pointer-events-none absolute inset-0" />}
+    </button>
   );
 }
 
