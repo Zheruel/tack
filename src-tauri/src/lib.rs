@@ -88,13 +88,23 @@ fn start_sidecar(app: &tauri::AppHandle, sidecar: Arc<Sidecar>) {
     });
 }
 
-pub fn run() {
-    // macOS badges the text caret with an input-source indicator; off for Tack only.
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_foundation::{NSString, NSUserDefaults};
-        NSUserDefaults::standardUserDefaults().setBool_forKey(false, &NSString::from_str("TSMLanguageIndicatorEnabled"));
+// macOS pins a Writing Tools button beside the caret in any WKWebView text field. Chromium apps
+// never show it. Writing Tools stays in the context menu.
+#[cfg(target_os = "macos")]
+fn hide_writing_tools_affordance() {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+    use objc2::{ffi, sel};
+    extern "C-unwind" fn no(_: &AnyObject, _: Sel) -> Bool {
+        Bool::NO
     }
+    let Some(class) = AnyClass::get(c"WKWebView") else { return };
+    unsafe {
+        let imp: Imp = std::mem::transmute(no as extern "C-unwind" fn(&AnyObject, Sel) -> Bool);
+        ffi::class_replaceMethod(class as *const AnyClass as *mut AnyClass, sel!(allowsWritingToolsAffordance), imp, c"B@:".as_ptr());
+    }
+}
+
+pub fn run() {
     let sidecar = Arc::new(Sidecar::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -106,6 +116,8 @@ pub fn run() {
         .setup({
             let sidecar = sidecar.clone();
             move |app| {
+                #[cfg(target_os = "macos")]
+                hide_writing_tools_affordance();
                 start_sidecar(app.handle(), sidecar);
                 Ok(())
             }

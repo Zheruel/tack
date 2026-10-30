@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "@fontsource-variable/hanken-grotesk";
 @import "@fontsource-variable/jetbrains-mono";
 @import "streamdown/styles.css";
 
@@ -9,18 +8,19 @@
 @source "../../node_modules/streamdown/dist/*.js";
 @source "../../node_modules/@streamdown/code/dist/*.js";
 
-/* One theme: warm charcoal like oiled leather, brass for the few things that matter. */
+/* One theme: warm charcoal like oiled leather, brass for the few things that matter.
+   Faint text is lifted so it passes 4.5:1 on the canvas. */
 @theme {
-  --color-canvas: #1b1917;
+  --color-canvas: #1c1a18;
   --color-rail: #161412;
-  --color-raised: #24211e;
-  --color-hover: #2b2724;
-  --color-line: #322d29;
-  --color-ink: #ece6dd;
-  --color-dim: #a69d92;
-  --color-faint: #70685f;
+  --color-raised: #252220;
+  --color-hover: #2d2926;
+  --color-line: #35302b;
+  --color-ink: #efe9e0;
+  --color-dim: #b0a79b;
+  --color-faint: #8f877d;
   --color-brass: #c9a35b;
-  --color-brass-ink: #1b1917;
+  --color-brass-ink: #1c1a18;
   --color-danger: #e0796b;
   --color-ok: #8fb38a;
 
@@ -37,7 +37,7 @@
   --color-primary-foreground: var(--color-canvas);
   --color-sidebar: var(--color-rail);
 
-  --font-sans: "Hanken Grotesk Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
 }
 
@@ -118,9 +118,10 @@ input {
 
 /* Assistant prose. */
 .prose-tack {
-  font-size: 15px;
-  line-height: 1.65;
-  color: var(--color-ink);
+  font-size: 14.5px;
+  line-height: 1.62;
+  letter-spacing: -0.003em;
+  color: color-mix(in oklab, var(--color-ink) 92%, transparent);
   overflow-wrap: anywhere;
 }
 .prose-tack :where(p, ul, ol, pre, blockquote, table) {
@@ -154,6 +155,10 @@ input {
 }
 .prose-tack li {
   margin: 0.2em 0;
+}
+/* Loose lists wrap items in <p>; keep them as tight as plain items. */
+.prose-tack li > p {
+  margin: 0;
 }
 .prose-tack li::marker {
   color: var(--color-faint);
@@ -320,12 +325,86 @@ input {
   animation: tack-dock 180ms ease-out both;
 }
 
+/* Live line: the label sweeps with a stepped highlight, then rests. */
+.shimmer {
+  color: transparent;
+  background: linear-gradient(90deg, var(--color-dim) 0%, var(--color-dim) 40%, #fbf3e4 50%, var(--color-dim) 60%, var(--color-dim) 100%);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: tack-shine 2.6s steps(44) infinite;
+}
+@keyframes tack-shine {
+  0% {
+    background-position: 100% 0;
+  }
+  65%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+@keyframes tack-swap {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+.live-swap {
+  animation: tack-swap 350ms cubic-bezier(0.19, 1, 0.22, 1) both;
+}
+/* The tack presses in; a ripple spreads where the pin lands. */
+.tack-pin {
+  transform-origin: 8px 14px;
+  animation: tack-press 1.5s cubic-bezier(0.34, 1.3, 0.64, 1) infinite;
+}
+.tack-ripple {
+  transform-origin: 8px 14.6px;
+  animation: tack-ripple 1.5s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+}
+@keyframes tack-press {
+  0%,
+  100% {
+    transform: translateY(-1.5px);
+  }
+  22% {
+    transform: translateY(1px) scaleY(0.86);
+  }
+  40% {
+    transform: translateY(0);
+  }
+}
+@keyframes tack-ripple {
+  0%,
+  20% {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+  26% {
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pulse,
   .update-card,
   .spin,
   .pop,
-  .dock-in {
+  .dock-in,
+  .live-swap,
+  .tack-pin {
     animation: none;
+  }
+  .tack-ripple {
+    animation: none;
+    opacity: 0;
+  }
+  .shimmer {
+    animation: none;
+    color: var(--color-dim);
+    background: none;
   }
 }

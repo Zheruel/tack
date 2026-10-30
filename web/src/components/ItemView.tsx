@@ -1,6 +1,6 @@
 import { createCodePlugin } from "@streamdown/code";
 import { Check, ChevronRight, Copy, Image as ImageIcon, Paperclip } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Streamdown } from "streamdown";
 import type { Item } from "../../../shared/protocol";
@@ -115,14 +115,14 @@ function UserMessage({ item }: { item: Of<"user"> }) {
           </div>
         )}
         {command ? (
-          <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">
+          <p className="selectable text-[14.5px] leading-[1.6] tracking-[-0.003em] whitespace-pre-wrap text-ink">
             <span className="mr-1.5 inline-flex items-center rounded-md bg-brass/15 px-1.5 py-px align-[1px] font-mono text-[12.5px] text-brass">
               /{command[1]}
             </span>
             {command[2]}
           </p>
         ) : (
-          <p className="selectable text-[15px] leading-[1.6] whitespace-pre-wrap text-ink">
+          <p className="selectable text-[14.5px] leading-[1.6] tracking-[-0.003em] whitespace-pre-wrap text-ink">
             {withMentions(item.text)}
           </p>
         )}
@@ -146,56 +146,166 @@ function withMentions(text: string): React.ReactNode {
   );
 }
 
-// ---- steps: a run of tool calls and thinking, collapsed to one line
+// ---- steps: a run of tool calls and thinking, collapsed to one quiet line. Narration carries
+// the story; the details open on click. The run in progress shows in <LiveLine> instead.
 
 export function Steps({ threadId, ids, live }: { threadId: string; ids: string[]; live: boolean }) {
   const items = useApp(useShallow((s) => ids.map((id) => s.transcripts[threadId]?.byId[id]).filter(Boolean) as Item[]));
   const [open, setOpen] = useState(false);
   const tools = items.filter((i): i is Tool => i.kind === "tool");
-  const failed = tools.some((t) => t.status === "error");
-  const current = live ? items[items.length - 1] : undefined;
+  const failed = tools.filter((t) => t.status === "error").length;
 
-  // A lone tool call needs no summary line.
-  if (items.length === 1 && tools.length === 1) {
-    return (
-      <div className="py-1">
-        <ToolLine tool={tools[0]!} live={live} />
-      </div>
-    );
-  }
-
-  const heading = current
-    ? current.kind === "tool"
-      ? present(current)
-      : { verb: "Thinking", target: undefined }
-    : { verb: summarize(items), target: undefined };
+  // Thinking alone isn't worth a line.
+  if (live || !tools.length) return null;
 
   return (
-    <div className="py-1">
+    <div className="py-0.5">
       <button
         onClick={() => setOpen(!open)}
-        className="group flex h-7 max-w-full items-center gap-2 text-left text-[13.5px] text-dim hover:text-ink"
+        className="flex min-h-7 max-w-full items-center gap-1.5 text-left text-[13.5px] text-faint transition-colors hover:text-dim"
       >
-        <Dot state={current ? "running" : failed ? "error" : "done"} />
-        <span className="shrink-0">{heading.verb}</span>
-        {heading.target && (
-          <span className="truncate font-mono text-[12px] text-faint group-hover:text-dim">{heading.target}</span>
-        )}
-        <ChevronRight size={13} className={`shrink-0 text-faint transition-transform ${open ? "rotate-90" : ""}`} />
+        <Caret open={open} />
+        <span className="truncate">{summarize(items)}</span>
+        {failed > 0 && <span className="shrink-0 text-danger/80">, {failed} failed</span>}
       </button>
-      {open && (
-        <div className="mt-1 mb-1 ml-[3px] border-l border-line pl-4">
-          {items.map((item) =>
-            item.kind === "tool" ? (
-              <ToolLine key={item.id} tool={item} live={false} />
-            ) : item.kind === "thinking" ? (
-              <ThinkingLine key={item.id} text={item.text} />
-            ) : null,
-          )}
-        </div>
+      <Unfold open={open}>
+        <StepList items={items} />
+      </Unfold>
+    </div>
+  );
+}
+
+function StepList({ items }: { items: Item[] }) {
+  return (
+    <div className="mt-0.5 mb-1.5 ml-[3px] border-l border-line pl-4">
+      {items.map((item) =>
+        item.kind === "tool" ? (
+          <ToolLine key={item.id} tool={item} live={false} />
+        ) : item.kind === "thinking" ? (
+          <ThinkingLine key={item.id} text={item.text} />
+        ) : null,
       )}
     </div>
   );
+}
+
+function Caret({ open }: { open: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 8 8"
+      aria-hidden
+      className={`size-2.5 shrink-0 fill-current opacity-80 transition-transform duration-[250ms] ease-[cubic-bezier(.19,1,.22,1)] ${open ? "rotate-90" : ""}`}
+    >
+      <path d="M2.5 1.2 6.2 4 2.5 6.8z" />
+    </svg>
+  );
+}
+
+// Height animates open and closed.
+function Unfold({ open, children }: { open: boolean; children: React.ReactNode }) {
+  return (
+    <div
+      className={`grid transition-[grid-template-rows,opacity] duration-300 ease-[cubic-bezier(.19,1,.22,1)] ${open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}`}
+    >
+      <div className="min-h-0 overflow-hidden">{open && children}</div>
+    </div>
+  );
+}
+
+// What the agent is doing right now, pinned last in the transcript while a turn runs.
+// One line by default; expanding shows this run's finished steps and the command's latest output.
+export function LiveLine({ threadId }: { threadId: string }) {
+  // A flat list so the shallow compare sees stable items: [turn start, ...trailing run].
+  const [start, ...items] = useApp(
+    useShallow((s): [number | undefined, ...Item[]] => {
+      const t = s.transcripts[threadId];
+      const order = t?.order ?? [];
+      let first = order.length;
+      while (first > 0 && t!.byId[order[first - 1]!]?.kind !== "turn") first--;
+      const startItem = order.slice(first).map((id) => t!.byId[id]).find((i) => i?.kind === "user");
+      // The run of steps at the end of the transcript, if the agent is in one.
+      const run: Item[] = [];
+      for (let i = order.length - 1; i >= first; i--) {
+        const item = t!.byId[order[i]!]!;
+        if (item.kind !== "tool" && item.kind !== "thinking") {
+          if (!run.length) run.push(item);
+          break;
+        }
+        run.unshift(item);
+      }
+      return [startItem?.ts, ...run];
+    }),
+  );
+  const [open, setOpen] = useState(false);
+  const now = useNow();
+
+  const current = items[items.length - 1];
+  const steps = items.filter((i) => i.kind === "tool" || i.kind === "thinking");
+  const finished = steps.slice(0, -1);
+  // Always present tense: the last step stays current until the next item arrives.
+  const { verb, target } =
+    current?.kind === "tool" ? present(current, true) : current?.kind === "assistant" ? { verb: "Writing", target: undefined } : { verb: "Thinking", target: undefined };
+  const output = current?.kind === "tool" ? current.output?.trimEnd().split("\n").slice(-4) : undefined;
+
+  return (
+    <div className="mt-2.5 select-none" aria-live="polite">
+      <button onClick={() => setOpen(!open)} className="group flex h-8 max-w-full items-center gap-2.5 text-left text-[13.5px] text-dim">
+        <TackPress />
+        <span key={`${verb}${target}`} className="live-swap flex min-w-0 items-center gap-2">
+          <span className="shimmer shrink-0">{verb}</span>
+          {target && <span className="max-w-[44ch] truncate font-mono text-[12.5px] text-faint">{short(target)}</span>}
+        </span>
+        {start && <span className="shrink-0 text-[12.5px] text-faint tabular-nums">{elapsed(now - start)}</span>}
+        <span className="text-faint group-hover:text-dim">
+          <Caret open={open} />
+        </span>
+      </button>
+      <Unfold open={open}>
+        {finished.length > 0 && <StepList items={finished} />}
+        {output?.length ? (
+          <pre className="selectable mt-0.5 mb-1.5 ml-[26px] overflow-hidden font-mono text-[11.5px] leading-[1.65] whitespace-pre text-faint">
+            {output.join("\n")}
+          </pre>
+        ) : (
+          !finished.length && <p className="mb-1.5 ml-[26px] text-[12.5px] text-faint">Nothing finished in this step yet.</p>
+        )}
+      </Unfold>
+    </div>
+  );
+}
+
+// Tack's mark pressing in, with a ripple where the pin lands.
+function TackPress() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden className="size-4 shrink-0 overflow-visible">
+      <defs>
+        <linearGradient id="tack-press" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#e2c27e" />
+          <stop offset="1" stopColor="#a9823f" />
+        </linearGradient>
+      </defs>
+      <ellipse className="tack-ripple" cx="8" cy="14.6" rx="4" ry="1.3" fill="none" stroke="var(--color-brass)" strokeWidth="0.9" />
+      <g className="tack-pin">
+        <ellipse cx="8" cy="4.6" rx="5.2" ry="2.1" fill="url(#tack-press)" />
+        <ellipse cx="8" cy="4.1" rx="4" ry="1.2" fill="#ecd39c" opacity="0.45" />
+        <path d="M7.1 6.6h1.8l-.6 7.2q-.3.7-.6 0z" fill="url(#tack-press)" />
+      </g>
+    </svg>
+  );
+}
+
+function useNow() {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
+function elapsed(ms: number) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
 }
 
 function Dot({ state }: { state: "running" | "error" | "done" }) {
@@ -302,9 +412,14 @@ function ToolDetail({ tool }: { tool: Tool }) {
 
 const file = (p?: string) => (p ? p.split("/").slice(-2).join("/") : undefined);
 
-function present(tool: Tool): { verb: string; target?: string } {
+// A command's gist: drops a leading "cd <dir> &&" and anything past the first pipe or chain.
+function short(target: string) {
+  return target.replace(/^cd\s+\S+\s*&&\s*/, "").split(/\s*(?:&&|\|\||;|\|)\s*/)[0]!;
+}
+
+function present(tool: Tool, live = false): { verb: string; target?: string } {
   const input = (tool.input ?? {}) as Record<string, any>;
-  const running = tool.status === "running";
+  const running = live || tool.status === "running";
   const v = (doing: string, done: string) => (running ? doing : done);
   switch (tool.name) {
     case "Bash":
@@ -340,33 +455,40 @@ function present(tool: Tool): { verb: string; target?: string } {
   }
 }
 
-// "Read 3 files, edited 2 files, ran 4 commands"
+// "Read server.ts, edited 2 files and ran 3 commands". A lone file is named.
 function summarize(items: Item[]): string {
-  const count = { read: 0, search: 0, write: 0, edit: 0, run: 0, web: 0, other: 0, think: 0 };
+  const files = { read: new Set<string>(), write: new Set<string>(), edit: new Set<string>() };
+  const count = { search: 0, run: 0, web: 0, other: 0 };
   for (const i of items) {
-    if (i.kind === "thinking") count.think++;
     if (i.kind !== "tool") continue;
-    if (i.name === "Read") count.read++;
+    const input = (i.input ?? {}) as Record<string, any>;
+    const path = typeof input.file_path === "string" ? input.file_path : undefined;
+    if (i.name === "Read") files.read.add(path ?? i.id);
     else if (i.name === "Grep" || i.name === "Glob") count.search++;
-    else if (i.name === "Write") count.write++;
-    else if (i.name === "Edit" || i.name === "MultiEdit") count.edit++;
-    else if (i.name === "Patch") count.edit += Math.max(1, ((i.input as any)?.changes ?? []).length);
+    else if (i.name === "Write") files.write.add(path ?? i.id);
+    else if (i.name === "Edit" || i.name === "MultiEdit") files.edit.add(path ?? i.id);
+    else if (i.name === "Patch") for (const c of input.changes ?? [{ path: i.id }]) files.edit.add(c.path);
     else if (i.name === "Bash") count.run++;
     else if (i.name === "WebFetch" || i.name === "WebSearch") count.web++;
     else count.other++;
   }
-  const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+  const named = (set: Set<string>, verb: string) => {
+    if (!set.size) return undefined;
+    const [only] = set;
+    return set.size === 1 && only!.includes("/") ? `${verb} ${only!.split("/").pop()}` : `${verb} ${set.size} ${set.size === 1 ? "file" : "files"}`;
+  };
+  const n = (k: number, text: string) => (k ? text : undefined);
   const parts = [
-    count.read && `read ${n(count.read, "file", "files")}`,
-    count.search && `searched ${n(count.search, "time", "times")}`,
-    count.write && `wrote ${n(count.write, "file", "files")}`,
-    count.edit && `edited ${n(count.edit, "file", "files")}`,
-    count.run && `ran ${n(count.run, "command", "commands")}`,
-    count.web && `browsed ${n(count.web, "page", "pages")}`,
-    count.other && `used ${n(count.other, "tool", "tools")}`,
+    named(files.read, "read"),
+    n(count.search, count.search === 1 ? "searched once" : `searched ${count.search} times`),
+    named(files.write, "wrote"),
+    named(files.edit, "edited"),
+    n(count.run, count.run === 1 ? "ran a command" : `ran ${count.run} commands`),
+    n(count.web, count.web === 1 ? "browsed a page" : `browsed ${count.web} pages`),
+    n(count.other, count.other === 1 ? "used a tool" : `used ${count.other} tools`),
   ].filter(Boolean) as string[];
   if (!parts.length) return "Thought";
-  const text = parts.join(", ");
+  const text = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0]!;
   return text[0]!.toUpperCase() + text.slice(1);
 }
 

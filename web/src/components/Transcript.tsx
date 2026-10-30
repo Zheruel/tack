@@ -3,7 +3,7 @@ import { ArrowDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
-import { ItemView, Steps } from "./ItemView";
+import { ItemView, LiveLine, Steps } from "./ItemView";
 import { tackTool } from "./TackTools";
 import { TaskList } from "./TaskList";
 
@@ -119,8 +119,8 @@ export function Transcript({ threadId }: { threadId: string }) {
               );
             })}
           </div>
-          {running && <Working threadId={threadId} />}
           <TaskList threadId={threadId} />
+          {running && <LiveLine threadId={threadId} />}
         </div>
       </div>
       {away && (
@@ -140,21 +140,4 @@ function ItemRow({ threadId, itemId, streaming }: { threadId: string; itemId: st
   const item = useApp((s) => s.transcripts[threadId]?.byId[itemId]);
   if (!item) return null;
   return <ItemView threadId={threadId} item={item} streaming={streaming} />;
-}
-
-// Shown while a turn runs but nothing is visibly happening yet.
-function Working({ threadId }: { threadId: string }) {
-  const idle = useApp((s) => {
-    const t = s.transcripts[threadId];
-    const id = t?.order[t.order.length - 1];
-    const item = id ? t.byId[id] : undefined;
-    return !item || item.kind === "user" || item.kind === "turn";
-  });
-  if (!idle) return null;
-  return (
-    <div className="flex h-9 items-center gap-2.5 text-[13.5px] text-faint">
-      <span className="pulse size-1.5 rounded-full bg-brass" />
-      Thinking
-    </div>
-  );
 }
