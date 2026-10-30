@@ -129,7 +129,7 @@ export function Composer({ threadId }: { threadId?: string }) {
       {threadId && <Queue threadId={threadId} />}
       <div
         onClick={() => input.current?.focus()}
-        className="relative rounded-[20px] border border-line bg-raised shadow-[0_10px_40px_-16px_rgba(0,0,0,0.7)] transition-colors focus-within:border-[#4a423a]"
+        className="relative rounded-[20px] border border-line bg-raised shadow-[0_10px_40px_-16px_rgba(0,0,0,0.7)]"
       >
         {completion && <CompletionMenu completion={completion} onPick={pick} onHover={setIndex} />}
         {attachments.length > 0 && (

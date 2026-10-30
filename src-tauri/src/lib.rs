@@ -89,6 +89,12 @@ fn start_sidecar(app: &tauri::AppHandle, sidecar: Arc<Sidecar>) {
 }
 
 pub fn run() {
+    // macOS badges the text caret with an input-source indicator; off for Tack only.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSUserDefaults};
+        NSUserDefaults::standardUserDefaults().setBool_forKey(false, &NSString::from_str("TSMLanguageIndicatorEnabled"));
+    }
     let sidecar = Arc::new(Sidecar::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
