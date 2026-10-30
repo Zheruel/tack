@@ -53,6 +53,7 @@ export class Store {
     if (!cols.includes("questions")) this.db.run("ALTER TABLE threads ADD COLUMN questions TEXT");
     // Sub-agent threads point at the thread whose agent started them.
     if (!cols.includes("parent_id")) this.db.run("ALTER TABLE threads ADD COLUMN parent_id TEXT");
+    if (!cols.includes("prs")) this.db.run("ALTER TABLE threads ADD COLUMN prs TEXT");
     // "default" was an alias for Opus; threads now name the model explicitly.
     this.db.run("UPDATE threads SET model = 'opus' WHERE model = 'default'");
     this.db.run("PRAGMA foreign_keys = ON");
@@ -156,6 +157,13 @@ export class Store {
     this.db.query("UPDATE threads SET todos = ? WHERE id = ?").run(JSON.stringify(todos), id);
   }
 
+  addPr(id: string, url: string): boolean {
+    const prs = this.thread(id)?.prs ?? [];
+    if (prs.includes(url)) return false;
+    this.db.query("UPDATE threads SET prs = ? WHERE id = ?").run(JSON.stringify([...prs, url]), id);
+    return true;
+  }
+
   setContext(id: string, context: { used: number; window: number }) {
     this.db.query("UPDATE threads SET context = ? WHERE id = ?").run(JSON.stringify(context), id);
   }
@@ -203,6 +211,7 @@ function toThread(r: any): Thread {
     todos: r.todos ? JSON.parse(r.todos) : undefined,
     questions: r.questions ? JSON.parse(r.questions) : undefined,
     parentId: r.parent_id ?? undefined,
+    prs: r.prs ? JSON.parse(r.prs) : undefined,
     settled: r.settled === null ? Date.now() - r.updated_at > AUTO_SETTLE_MS : r.settled === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

@@ -29,6 +29,8 @@ export interface Thread {
   questions?: Question[];
   // A sub-agent's thread: the thread whose agent started it.
   parentId?: string;
+  // GitHub PRs this thread's agents opened (URLs), sub-agents' included.
+  prs?: string[];
   // Set by hand, or automatically after a few idle days. Sending a message unsettles it.
   settled: boolean;
   createdAt: number;
@@ -179,7 +181,13 @@ export interface Requests {
   "commands.list": { params: { projectId: string; provider: Provider }; result: Command[] };
   "files.search": { params: { projectId: string; query: string }; result: string[] };
   "git.info": { params: { projectId: string }; result: GitInfo };
+  // The thread's PRs plus the project branch's, freshest state from GitHub.
+  "git.prs": { params: { threadId: string }; result: PullRequest[] };
   "cli.update": { params: { name: CliName }; result: null };
+  "project.reveal": { params: { projectId: string }; result: null };
+  // Installed apps the project can be opened in, e.g. "Cursor".
+  "editors.list": { params: {}; result: string[] };
+  "editor.open": { params: { projectId: string; editor: string }; result: null };
 }
 
 export type Method = keyof Requests;

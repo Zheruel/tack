@@ -51,6 +51,10 @@ const broadcast = (event: Event) => {
   const frame = JSON.stringify({ event } satisfies ServerFrame);
   for (const ws of sockets) ws.send(frame);
 };
+// Apps the project can be opened in, in menu order. Checked against what's installed.
+const EDITORS = ["Cursor", "Visual Studio Code", "Zed", "Windsurf", "Sublime Text", "WebStorm", "IntelliJ IDEA", "Xcode", "Ghostty", "iTerm", "Terminal"];
+const APP_DIRS = ["/Applications", join(homedir(), "Applications"), "/System/Applications/Utilities"];
+
 const hub = new Hub(store, broadcast, { bins, vars });
 const git = new Git(vars);
 const updates = new Updates(
@@ -123,7 +127,19 @@ const handlers: Handlers = {
   "commands.list": ({ projectId, provider }) => hub.commands(projectId, provider),
   "files.search": ({ projectId, query }) => git.search(projectPath(projectId), query),
   "git.info": ({ projectId }) => git.info(projectPath(projectId)),
+  "git.prs": ({ threadId }) => {
+    const t = hub.thread(threadId);
+    const top = t.parentId ? hub.thread(t.parentId) : t; // a sub-agent shows its parent's
+    return git.prs(projectPath(top.projectId), top.prs ?? []);
+  },
   "cli.update": ({ name }) => (updates.update(name), null),
+  "project.reveal": ({ projectId }) => (Bun.spawn(["open", "-R", projectPath(projectId)]), null),
+  "editors.list": () => EDITORS.filter((name) => APP_DIRS.some((d) => existsSync(join(d, `${name}.app`)))),
+  "editor.open": ({ projectId, editor }) => {
+    if (!EDITORS.includes(editor)) throw new Error(`Unknown editor ${editor}`);
+    Bun.spawn(["open", "-a", editor, projectPath(projectId)]);
+    return null;
+  },
 };
 
 const server = Bun.serve({

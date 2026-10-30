@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import type {
+  PullRequest,
   Access,
   ApprovalRequest,
   Attachment,
@@ -51,6 +52,13 @@ interface State {
   updatedClis: Partial<Record<CliName, string>>;
   appUpdate?: UpdateItem;
   restartPending: boolean;
+  // The thread details card at the top right: kept open beside the chat when there's room
+  // (`details`), else shown on demand over it (`detailsPeek`). `detailsFit` says which applies.
+  details: boolean;
+  detailsPeek: boolean;
+  detailsFit: boolean;
+  // Each top thread's PRs with their latest GitHub state.
+  prs: Record<string, PullRequest[]>;
 }
 
 export const useApp = create<State>(() => ({
@@ -66,7 +74,24 @@ export const useApp = create<State>(() => ({
   clis: {},
   updatedClis: {},
   restartPending: false,
+  details: load("tack.details", true),
+  detailsPeek: false,
+  detailsFit: true,
+  prs: {},
 }));
+
+export function toggleDetails() {
+  const { details, detailsFit, detailsPeek } = useApp.getState();
+  if (!detailsFit) return useApp.setState({ detailsPeek: !detailsPeek });
+  save("tack.details", !details);
+  useApp.setState({ details: !details });
+}
+
+// GitHub state for a thread's PRs; a sub-agent's thread shares its parent's.
+export async function loadPrs(threadId: string) {
+  const prs = await call("git.prs", { threadId }).catch(() => undefined);
+  if (prs) useApp.setState((s) => ({ prs: { ...s.prs, [threadId]: prs } }));
+}
 
 const set = useApp.setState;
 const get = useApp.getState;

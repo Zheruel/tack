@@ -359,6 +359,7 @@ export class Hub {
         if (final) {
           l.streaming.delete(item.id);
           this.store.appendItem(threadId, item);
+          if (item.kind === "tool" && item.output) this.notePrs(threadId, item);
         } else {
           l.streaming.set(item.id, item);
         }
@@ -419,6 +420,17 @@ export class Hub {
       },
       agent: (input) => this.spawn(threadId, input),
     };
+  }
+
+  // A PR an agent opened (`gh pr create`, or a GitHub tool) is kept on the top thread, so the
+  // thread shows it with its live state. Other PR links in output (lists, views) are ignored.
+  private notePrs(threadId: string, item: Extract<Item, { kind: "tool" }>) {
+    const input = JSON.stringify(item.input ?? "");
+    if (!/gh pr create|create_pull_request/.test(input + item.name)) return;
+    const root = this.store.thread(threadId)?.parentId ?? threadId;
+    let added = false;
+    for (const url of item.output!.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []) added = this.store.addPr(root, url) || added;
+    if (added) this.emitThread(root);
   }
 
   // ---- sub-agents

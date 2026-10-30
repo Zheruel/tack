@@ -1,13 +1,13 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, ChevronRight, FolderPlus } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, PanelRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Composer, MenuContent, MenuItem } from "./components/Composer";
-import { ChangesTile } from "./components/ChangesTile";
+import { ThreadDetails } from "./components/ThreadDetails";
 import { addProject, Sidebar } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { openExternal } from "./native";
 import { call } from "./rpc";
-import { openThread, startDraft, updateDraft, useApp } from "./store";
+import { openThread, startDraft, toggleDetails, updateDraft, useApp } from "./store";
 
 export function App() {
   const ready = useApp((s) => s.ready);
@@ -20,10 +20,11 @@ export function App() {
   return (
     <div className="flex h-full">
       <Sidebar />
-      <main className="flex min-w-0 flex-1 flex-col border-l border-line/70 bg-canvas">
+      <main className="relative flex min-w-0 flex-1 flex-col border-l border-line/70 bg-canvas">
         {hasThread ? (
           <>
             <Header threadId={activeId!} />
+            <ThreadDetails threadId={activeId!} />
             <Transcript threadId={activeId!} />
             <Composer threadId={activeId!} />
           </>
@@ -105,6 +106,7 @@ function Header({ threadId }: { threadId: string }) {
   const thread = useApp((s) => s.threads[threadId])!;
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
   const parent = useApp((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
+  const details = useApp((s) => (s.detailsFit ? s.details : s.detailsPeek));
   const [editing, setEditing] = useState(false);
 
   const rename = (title: string) => {
@@ -149,9 +151,14 @@ function Header({ threadId }: { threadId: string }) {
           {project.name}
         </span>
       )}
-      <div className="ml-auto flex min-w-0 shrink items-center">
-        <ChangesTile threadId={threadId} />
-      </div>
+      <button
+        data-details-toggle
+        onClick={toggleDetails}
+        title="Thread details"
+        className={`ml-auto flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-hover hover:text-ink ${details ? "text-ink" : "text-faint"}`}
+      >
+        <PanelRight size={15} strokeWidth={1.8} />
+      </button>
     </header>
   );
 }

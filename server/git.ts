@@ -55,11 +55,20 @@ export class Git {
     return list;
   }
 
-  private async pr(cwd: string): Promise<PullRequest | null> {
+  // The thread's PRs, then the branch's if it is another one. Ones gh can't see are left out.
+  async prs(cwd: string, urls: string[]): Promise<PullRequest[]> {
+    const all = await Promise.all([...urls.map((u) => this.pr(cwd, u)), this.pr(cwd)]);
+    const seen = new Set<string>();
+    return all.filter((p): p is PullRequest => !!p && !seen.has(p.url) && !!seen.add(p.url));
+  }
+
+  // One PR by URL, or the current branch's.
+  private async pr(cwd: string, url?: string): Promise<PullRequest | null> {
     const out = await this.run(cwd, [
       "gh",
       "pr",
       "view",
+      ...(url ? [url] : []),
       "--json",
       "number,title,url,state,isDraft,additions,deletions,statusCheckRollup",
     ]);

@@ -1,10 +1,11 @@
 import * as Ctx from "@radix-ui/react-context-menu";
 import { Check, ChevronRight, RotateCcw, SquarePen } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Thread } from "../../../shared/protocol";
 import { pickFolder } from "../native";
 import { call } from "../rpc";
-import { openThread, setShowSettled, startDraft, useApp } from "../store";
+import { loadPrs, openThread, setShowSettled, startDraft, useApp } from "../store";
+import { prState } from "./ThreadDetails";
 import { Updates } from "./Updates";
 
 export async function addProject() {
@@ -179,6 +180,7 @@ function ThreadRow({ thread }: { thread: Thread }) {
               {status && <span className={`size-1.5 shrink-0 rounded-full ${status.dot}`} />}
               <span className="truncate">{status ? status.label : project?.name}</span>
               {status && project && <span className="truncate opacity-70">{project.name}</span>}
+              <PrBadge thread={thread} />
               <span className="ml-auto shrink-0 group-hover:invisible">{ago(thread.updatedAt)}</span>
             </div>
           </div>
@@ -247,4 +249,26 @@ function ago(ts: number) {
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
   return d < 7 ? `${d}d` : `${Math.floor(d / 7)}w`;
+}
+
+// The newest PR the thread opened, colored by its state, as in T3 Code's sidebar.
+function PrBadge({ thread }: { thread: Thread }) {
+  const prs = useApp((s) => s.prs[thread.id]);
+  const urls = thread.prs?.length ?? 0;
+  useEffect(() => {
+    if (urls) loadPrs(thread.id);
+  }, [thread.id, urls]);
+  const own = prs?.filter((p) => thread.prs?.includes(p.url));
+  const pr = own?.[own.length - 1];
+  if (!pr) return null;
+  const state = prState(pr);
+  return (
+    <span
+      title={own!.map((p) => `#${p.number} ${prState(p).label}: ${p.title}`).join("\n")}
+      className="flex shrink-0 items-center gap-0.5 tabular-nums"
+    >
+      <state.icon size={11} className={state.color} />#{pr.number}
+      {own!.length > 1 && <span className="opacity-70">+{own!.length - 1}</span>}
+    </span>
+  );
 }
