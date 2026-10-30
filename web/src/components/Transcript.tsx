@@ -1,17 +1,23 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
 import { ItemView, Steps } from "./ItemView";
+import { tackTool } from "./TackTools";
+import { TaskList } from "./TaskList";
 
 export type Row = { key: string; kind: "item"; id: string } | { key: string; kind: "steps"; ids: string[] };
 
-// Consecutive tool calls and thinking collapse into one "steps" row.
-function toRows(order: string[], kindOf: (id: string) => string | undefined): Row[] {
+// Consecutive tool calls and thinking collapse into one "steps" row. Tack's own tools stand
+// alone (visuals, answered questions) or not at all (the task list has its own place).
+function toRows(order: string[], itemOf: (id: string) => Item | undefined): Row[] {
   const rows: Row[] = [];
   for (const id of order) {
-    const kind = kindOf(id);
-    const isStep = kind === "tool" || kind === "thinking";
+    const item = itemOf(id);
+    const own = item?.kind === "tool" ? tackTool(item.name) : undefined;
+    if (own === "todo") continue;
+    const isStep = !own && (item?.kind === "tool" || item?.kind === "thinking");
     const last = rows[rows.length - 1];
     if (isStep && last?.kind === "steps") last.ids.push(id);
     else if (isStep) rows.push({ key: id, kind: "steps", ids: [id] });
@@ -35,7 +41,7 @@ export function Transcript({ threadId }: { threadId: string }) {
 
   // Kinds never change once an item exists, so rows only need recomputing when the order does.
   const rows = useMemo(
-    () => (order ? toRows(order, (id) => useApp.getState().transcripts[threadId]?.byId[id]?.kind) : []),
+    () => (order ? toRows(order, (id) => useApp.getState().transcripts[threadId]?.byId[id]) : []),
     [order, threadId],
   );
 
@@ -114,6 +120,7 @@ export function Transcript({ threadId }: { threadId: string }) {
             })}
           </div>
           {running && <Working threadId={threadId} />}
+          <TaskList threadId={threadId} />
         </div>
       </div>
       {away && (

@@ -23,6 +23,10 @@ export interface Thread {
   status: ThreadStatus;
   // Tokens in the model's context after the last turn, out of its window.
   context?: { used: number; window: number };
+  // The agent's task list for the current request.
+  todos?: Todo[];
+  // Questions the agent asked and is waiting on; answering sends them as the next message.
+  questions?: Question[];
   // Set by hand, or automatically after a few idle days. Sending a message unsettles it.
   settled: boolean;
   createdAt: number;
@@ -89,6 +93,19 @@ export interface ApprovalRequest {
   provider: Provider;
   tool: string;
   input: unknown;
+}
+
+export interface Todo {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+// The agent asking the user to choose; free text is always allowed.
+export interface Question {
+  question: string;
+  header: string;
+  options: { label: string; description?: string }[];
+  multiSelect?: boolean;
 }
 
 // Something you can type after "/" in the composer.

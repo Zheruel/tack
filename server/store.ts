@@ -4,7 +4,7 @@
 import { Database } from "bun:sqlite";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Effort, Access, Item, Project, Provider, Thread } from "../shared/protocol";
+import type { Effort, Access, Item, Project, Provider, Question, Thread, Todo } from "../shared/protocol";
 
 // A thread's native session with one provider, and how much of the transcript it has seen.
 export interface NativeSession {
@@ -49,6 +49,8 @@ export class Store {
           .run(JSON.stringify({ claude: { id: r.session_id, seen: this.items(r.id).length } }), r.id);
     }
     if (!cols.includes("context")) this.db.run("ALTER TABLE threads ADD COLUMN context TEXT");
+    if (!cols.includes("todos")) this.db.run("ALTER TABLE threads ADD COLUMN todos TEXT");
+    if (!cols.includes("questions")) this.db.run("ALTER TABLE threads ADD COLUMN questions TEXT");
     // "default" was an alias for Opus; threads now name the model explicitly.
     this.db.run("UPDATE threads SET model = 'opus' WHERE model = 'default'");
     this.db.run("PRAGMA foreign_keys = ON");
@@ -143,6 +145,14 @@ export class Store {
     this.db.query("UPDATE threads SET sessions = ? WHERE id = ?").run(JSON.stringify(all), id);
   }
 
+  setQuestions(id: string, questions: Question[] | null) {
+    this.db.query("UPDATE threads SET questions = ? WHERE id = ?").run(questions ? JSON.stringify(questions) : null, id);
+  }
+
+  setTodos(id: string, todos: Todo[]) {
+    this.db.query("UPDATE threads SET todos = ? WHERE id = ?").run(JSON.stringify(todos), id);
+  }
+
   setContext(id: string, context: { used: number; window: number }) {
     this.db.query("UPDATE threads SET context = ? WHERE id = ?").run(JSON.stringify(context), id);
   }
@@ -187,6 +197,8 @@ function toThread(r: any): Thread {
     access: r.access,
     status: "idle",
     context: r.context ? JSON.parse(r.context) : undefined,
+    todos: r.todos ? JSON.parse(r.todos) : undefined,
+    questions: r.questions ? JSON.parse(r.questions) : undefined,
     settled: r.settled === null ? Date.now() - r.updated_at > AUTO_SETTLE_MS : r.settled === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

@@ -6,6 +6,7 @@ import { Streamdown } from "streamdown";
 import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
 import { ProviderLogo } from "./Logos";
+import { Asked, tackTool, Visual } from "./TackTools";
 
 const plugins = { code: createCodePlugin({ themes: ["github-light", "vitesse-dark"] }) };
 const controls = { code: { copy: true, download: false }, table: false };
@@ -23,6 +24,10 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
       return <TurnEnd threadId={threadId} item={item} />;
     case "handoff":
       return <Handoff item={item} />;
+    case "tool": {
+      const own = tackTool(item.name); // the rest render inside <Steps>
+      return own === "show" ? <Visual tool={item} /> : own === "ask" ? <Asked tool={item} /> : null;
+    }
     case "error":
       return (
         <div className="selectable my-3 rounded-xl border border-danger/25 bg-danger/[0.06] px-4 py-3 text-[13.5px] leading-relaxed text-danger">
@@ -301,6 +306,8 @@ function present(tool: Tool): { verb: string; target?: string } {
     case "WebSearch":
       return { verb: v("Searching the web", "Searched the web"), target: input.query };
     case "TodoWrite":
+      return { verb: v("Updating the plan", "Updated the plan") };
+    case "update_plan":
       return { verb: v("Updating the plan", "Updated the plan") };
     case "Task":
     case "Agent":

@@ -1,9 +1,37 @@
 // Claude adapter: one long-lived `claude` process per active thread, fed through streaming input.
 // Maps SDK messages onto provider-neutral transcript items.
 
-import { query, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Attachment, Command, Item, ModelOption } from "../shared/protocol";
+import { createSdkMcpServer, query, tool, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Attachment, Command, Item, ModelOption, Todo } from "../shared/protocol";
+import { applyTodo, ASKED, systemPrompt, TOOLS } from "./prompt";
 import type { AgentSession, SessionEvents, SessionOptions } from "./session";
+
+// Built-in tools Tack keeps. Everything else (scheduling, cron, worktrees, notifications, review
+// reporting, ...) is for other Claude Code surfaces and only costs context here.
+const BUILTIN_TOOLS = ["Agent", "Bash", "Read", "Edit", "Write", "Skill", "WebFetch", "WebSearch"];
+
+// ask / todo / show, served in-process. The model sees them as mcp__tack__<name>.
+function tackTools(events: SessionEvents, abort: AbortSignal) {
+  const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+  let todos: Todo[] = [];
+  return createSdkMcpServer({
+    name: "tack",
+    alwaysLoad: true,
+    tools: [
+      tool("ask", TOOLS.ask.description, TOOLS.ask.input, async ({ questions }) => {
+        events.ask(questions);
+        return text(ASKED);
+      }),
+      tool("todo", TOOLS.todo.description, TOOLS.todo.input, async (input) => {
+        todos = applyTodo(todos, input);
+        events.todo(todos);
+        const current = todos.findIndex((t) => t.status === "in_progress");
+        return text(current < 0 ? "All steps done." : `Step ${current + 1} of ${todos.length} in progress.`);
+      }),
+      tool("show", TOOLS.show.description, TOOLS.show.input, async () => text("Shown to the user above your reply.")),
+    ],
+  });
+}
 
 class Inbox implements AsyncIterable<SDKUserMessage> {
   private buffer: SDKUserMessage[] = [];
@@ -63,15 +91,20 @@ export class ClaudeSession implements AgentSession {
         env: opts.env,
         abortController: this.abort,
         includePartialMessages: true,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: systemPrompt("claude"),
+        tools: BUILTIN_TOOLS,
+        mcpServers: { tack: tackTools(events, this.abort.signal) },
+        skills: opts.skills ?? "all",
+        title: "Tack", // Tack names threads itself; skips Claude's title-generation request
         permissionMode: opts.access === "full" ? "bypassPermissions" : "default",
-        // Flag settings outrank the user's own `defaultMode` (e.g. "auto"), so Tack's toggle wins.
-        settings: { permissions: { defaultMode: opts.access === "full" ? "bypassPermissions" : "default" } },
+        // Flag settings outrank the user's own settings, so Tack's access toggle wins. Tack's prompt
+        // already sets the writing style, so a configured output style would only repeat it.
+        settings: { permissions: { defaultMode: opts.access === "full" ? "bypassPermissions" : "default" }, outputStyle: "default" },
         allowDangerouslySkipPermissions: opts.access === "full",
         canUseTool:
           opts.access === "ask"
             ? async (tool, input, { signal }) =>
-                (await events.approve(tool, input, signal))
+                tool.startsWith("mcp__tack__") || (await events.approve(tool, input, signal))
                   ? { behavior: "allow", updatedInput: input }
                   : { behavior: "deny", message: "The user denied this action." }
             : undefined,

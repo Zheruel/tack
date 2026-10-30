@@ -1,0 +1,140 @@
+import { Check } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { Question } from "../../../shared/protocol";
+import { call } from "../rpc";
+import { useApp } from "../store";
+
+// The agent asking before it builds. Docked on top of the composer, one question at a time:
+// 1-4 picks an option, ↵ moves on, Esc skips. The answers go back as your next message, so
+// typing a reply in the composer instead works too.
+export function Questions({ threadId }: { threadId: string }) {
+  const questions = useApp((s) => s.threads[threadId]?.questions);
+  if (!questions?.length) return null;
+  return <Card key={JSON.stringify(questions)} threadId={threadId} questions={questions} />;
+}
+
+const send = (threadId: string, text: string) => call("chat.send", { threadId, text, attachments: [] });
+
+function Card({ threadId, questions }: { threadId: string; questions: Question[] }) {
+  const [index, setIndex] = useState(0);
+  const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
+  const [typed, setTyped] = useState<string[]>(() => questions.map(() => ""));
+  const other = useRef<HTMLInputElement>(null);
+  const q = questions[index]!;
+  const last = index === questions.length - 1;
+
+  const answerOf = (i: number) => [...picks[i]!, typed[i]!.trim()].filter(Boolean).join(", ");
+  const submit = (finalPicks = picks) => {
+    const lines = questions.map((x, i) => `${x.header}: ${[...finalPicks[i]!, typed[i]!.trim()].filter(Boolean).join(", ") || "your call"}`);
+    send(threadId, lines.join("\n"));
+  };
+  const skip = () => send(threadId, "Your call: go with your recommendations.");
+  const next = (finalPicks = picks) => (last ? submit(finalPicks) : setIndex(index + 1));
+
+  const pick = (label: string) => {
+    const updated = picks.map((p, i) =>
+      i !== index ? p : q.multiSelect ? (p.includes(label) ? p.filter((l) => l !== label) : [...p, label]) : [label],
+    );
+    setPicks(updated);
+    if (!q.multiSelect) {
+      setTyped((t) => t.map((v, i) => (i === index ? "" : v)));
+      next(updated);
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      const inOther = e.target === other.current;
+      const typing = !inOther && e.target instanceof HTMLTextAreaElement && e.target.value.trim() !== "";
+      if (typing) return;
+      const n = Number(e.key);
+      if (!inOther && n >= 1 && n <= q.options.length) pick(q.options[n - 1]!.label);
+      else if (e.key === "Enter" && answerOf(index)) next();
+      else if (e.key === "Escape") skip();
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener("keydown", onKey, true); // before the composer's own keys
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
+
+  return (
+    <div className="dock-in mb-2 rounded-2xl border border-brass/25 bg-raised px-4 pt-3 pb-3">
+      <div className="mb-1 flex h-5 items-center gap-1.5 text-[12px] text-faint">
+        {questions.length > 1
+          ? questions.map((x, i) => (
+              <button
+                key={i}
+                onClick={() => setIndex(i)}
+                className={`flex items-center gap-1 rounded-md px-1.5 py-px transition-colors ${
+                  i === index ? "bg-hover text-ink" : "hover:text-dim"
+                }`}
+              >
+                {answerOf(i) && i !== index && <Check size={11} className="text-ok/80" />}
+                {x.header}
+              </button>
+            ))
+          : <span>{q.header}</span>}
+        <button
+          onClick={skip}
+          title="Let the agent decide (Esc)"
+          className="ml-auto rounded-md px-1.5 py-px hover:bg-hover hover:text-dim"
+        >
+          Skip
+        </button>
+      </div>
+      <p className="mb-2 text-[14.5px] leading-snug text-ink">{q.question}</p>
+      <div className="space-y-0.5">
+        {q.options.map((o, i) => {
+          const on = picks[index]!.includes(o.label);
+          return (
+            <button
+              key={o.label}
+              onClick={() => pick(o.label)}
+              className={`group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition-colors ${
+                on ? "bg-brass/12" : "hover:bg-hover"
+              }`}
+            >
+              <span
+                className={`mt-px flex size-5 shrink-0 items-center justify-center rounded-md text-[11px] tabular-nums ${
+                  on ? "bg-brass text-brass-ink" : "bg-hover text-faint group-hover:text-dim"
+                }`}
+              >
+                {on && q.multiSelect ? <Check size={11} /> : i + 1}
+              </span>
+              <span className="min-w-0">
+                <span className={`block text-[13.5px] leading-5 ${on ? "text-ink" : "text-ink/90"}`}>{o.label}</span>
+                {o.description && <span className="block text-[12.5px] leading-snug text-faint">{o.description}</span>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex items-center gap-2 pl-2">
+        <input
+          ref={other}
+          value={typed[index]}
+          onChange={(e) => {
+            const v = e.target.value;
+            setTyped((t) => t.map((x, i) => (i === index ? v : x)));
+            if (!q.multiSelect && v) setPicks((p) => p.map((x, i) => (i === index ? [] : x)));
+          }}
+          placeholder="Or type your own answer"
+          className="h-8 min-w-0 flex-1 rounded-lg bg-transparent text-[13.5px] text-ink outline-none placeholder:text-faint"
+        />
+        {(q.multiSelect || typed[index]) && (
+          <button
+            disabled={!answerOf(index)}
+            onClick={() => next()}
+            className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-brass px-2.5 text-[12.5px] font-medium text-brass-ink transition enabled:hover:brightness-110 enabled:active:scale-[0.97] disabled:opacity-40"
+          >
+            {last ? "Send" : "Next"}
+            <span className="text-[11px] text-brass-ink/55">↵</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

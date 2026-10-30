@@ -8,6 +8,7 @@ import { sendDraft, updateDraft, useApp } from "../store";
 import { Approval } from "./Approvals";
 import { CompletionMenu, useCompletion, type Suggestion } from "./Autocomplete";
 import { ModelPicker } from "./ModelPicker";
+import { Questions } from "./Questions";
 
 // Unsent text survives switching threads. Drafts (new threads) share one slot.
 const drafts = new Map<string, string>();
@@ -123,6 +124,7 @@ export function Composer({ threadId }: { threadId?: string }) {
 
   return (
     <div className="mx-auto w-full max-w-[768px] px-8 pb-6">
+      {threadId && <Questions threadId={threadId} />}
       {threadId && <Approval threadId={threadId} />}
       {threadId && <Queue threadId={threadId} />}
       <div

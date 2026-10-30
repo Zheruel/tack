@@ -1,6 +1,6 @@
 // What the hub needs from an agent backend. Claude and Codex both implement it.
 
-import type { Access, Attachment, Command, Effort, Item, ModelOption, Provider } from "../shared/protocol";
+import type { Access, Attachment, Command, Effort, Item, ModelOption, Provider, Question, Todo } from "../shared/protocol";
 
 export interface SessionEvents {
   // `final` items are complete and safe to persist; others are still streaming.
@@ -11,6 +11,9 @@ export interface SessionEvents {
   turnEnd(): void;
   closed(error?: string): void;
   approve(tool: string, input: unknown, signal: AbortSignal): Promise<boolean>;
+  // The agent asked; the answers arrive later as a user message.
+  ask(questions: Question[]): void;
+  todo(todos: Todo[]): void;
 }
 
 export interface SessionOptions {
@@ -21,6 +24,8 @@ export interface SessionOptions {
   resume?: string;
   bin?: string;
   env: Record<string, string>;
+  // Skills the agent may see; omitted means all of them.
+  skills?: string[];
 }
 
 export interface AgentSession {
@@ -42,4 +47,6 @@ export const noEvents: SessionEvents = {
   turnEnd() {},
   closed() {},
   approve: async () => false,
+  ask() {},
+  todo() {},
 };

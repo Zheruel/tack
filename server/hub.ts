@@ -17,6 +17,7 @@ import type {
   Item,
   ModelOption,
   Provider,
+  Question,
   Queued,
   Thread,
   ThreadStatus,
@@ -45,6 +46,37 @@ interface PendingApproval {
   request: ApprovalRequest;
   resolve(allow: boolean): void;
 }
+
+// Skills that have nothing to do with coding in a project; hidden from the agents and the "/" menu.
+const HIDDEN_SKILLS = new Set([
+  // Claude (claude.ai skills are listed without their "anthropic-skills:" prefix)
+  "docs",
+  "docx",
+  "google-workspace",
+  "pdf",
+  "pptx",
+  "xlsx",
+  "consolidate-memory",
+  "explain-usage",
+  "setup-claude",
+  "cowork-plugin-management:cowork-plugin-customizer",
+  "cowork-plugin-management:create-cowork-plugin",
+  "update-config",
+  "keybindings-help",
+  "fewer-permission-prompts",
+  "plugin-authoring",
+  "loop",
+  "schedule",
+  // Codex
+  "documents:documents",
+  "pdf:pdf",
+  "presentations:Presentations",
+  "spreadsheets:Spreadsheets",
+  "spreadsheets:excel-live-control",
+  "template-creator:template-creator",
+  "visualize:visualize",
+  "skill-installer",
+]);
 
 export class Hub {
   private live = new Map<string, Live>();
@@ -98,10 +130,22 @@ export class Hub {
     const hit = this.commandCache.get(key);
     if (hit && Date.now() - hit.at < COMMANDS_TTL_MS) return hit.list;
     const probe = createSession(provider, this.probeOptions(provider, project.path), noEvents);
-    const list = probe.commands().finally(() => probe.close());
+    const list = probe
+      .commands()
+      .then((all) => all.filter((c) => !HIDDEN_SKILLS.has(c.name)))
+      .finally(() => probe.close());
     list.catch(() => this.commandCache.delete(key));
     this.commandCache.set(key, { at: Date.now(), list });
     return list;
+  }
+
+  // Claude takes an allowlist, so the hidden skills are subtracted from what the project has.
+  // Undefined (all skills) if the list isn't known within a moment.
+  private async skillsFor(projectId: string, provider: Provider): Promise<string[] | undefined> {
+    if (provider !== "claude") return undefined;
+    const timeout = new Promise<undefined>((r) => setTimeout(r, 3000));
+    const list = await Promise.race([this.commands(projectId, provider).catch(() => undefined), timeout]);
+    return list?.map((c) => c.name); // built-in command names in the list are ignored
   }
 
   // A CLI was updated: running sessions keep their old process until their next message.
@@ -211,7 +255,7 @@ export class Hub {
 
   // ---- internals
 
-  private deliver(threadId: string, queued: Queued) {
+  private async deliver(threadId: string, queued: Queued) {
     const thread = this.store.thread(threadId);
     const project = thread && this.store.project(thread.projectId);
     if (!thread || !project) return;
@@ -241,6 +285,12 @@ export class Hub {
     this.store.settle(threadId, null);
     this.broadcast({ type: "item", threadId, item: user });
     if (thread.title === "New thread" && queued.text.trim()) this.store.updateThread(threadId, { title: titleFrom(queued.text) });
+    if (thread.todos?.length) this.store.setTodos(threadId, []); // the list belongs to one request
+    if (thread.questions) this.store.setQuestions(threadId, null); // this message answers them
+    live.status = "running";
+    live.lastActive = Date.now();
+    this.store.touch(threadId);
+    this.emitThread(threadId);
 
     if (live.stale || (live.session && live.session.provider !== provider)) {
       live.session?.close();
@@ -248,6 +298,7 @@ export class Hub {
       live.stale = false;
     }
     if (!live.session || live.session.closed) {
+      const skills = await this.skillsFor(project.id, provider);
       try {
         const session: AgentSession = createSession(
           provider,
@@ -259,6 +310,7 @@ export class Hub {
             resume: native.id,
             bin: this.env.bins[provider],
             env: this.env.vars,
+            skills,
           },
           this.sessionEvents(threadId, provider, () => session),
         );
@@ -267,15 +319,13 @@ export class Hub {
         const item: Item = { id: crypto.randomUUID(), kind: "error", text: e instanceof Error ? e.message : String(e), ts: Date.now() };
         this.store.appendItem(threadId, item);
         this.broadcast({ type: "item", threadId, item });
+        live.status = "error";
+        this.emitThread(threadId);
         return;
       }
     }
     const [text, images] = resolveAttachments(queued.text, queued.attachments);
     live.session.send((carry?.text ?? "") + text, images);
-    live.status = "running";
-    live.lastActive = Date.now();
-    this.store.touch(threadId);
-    this.emitThread(threadId);
   }
 
   private sessionEvents(threadId: string, provider: Provider, self: () => AgentSession): SessionEvents {
@@ -335,6 +385,14 @@ export class Hub {
           signal.addEventListener("abort", () => this.answer(request.id, false), { once: true });
           this.broadcast({ type: "approval", request });
         }),
+      ask: (questions: Question[]) => {
+        this.store.setQuestions(threadId, questions);
+        this.emitThread(threadId);
+      },
+      todo: (todos) => {
+        this.store.setTodos(threadId, todos);
+        this.emitThread(threadId);
+      },
     };
   }
 

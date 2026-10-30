@@ -1,7 +1,8 @@
 // Codex adapter: one `codex app-server` process per active thread, JSON-RPC over stdio
 // (one bare JSON object per line, no "jsonrpc" field). Maps thread items onto Tack items.
 
-import type { Attachment, Command, Effort, Item, ModelOption } from "../shared/protocol";
+import type { Attachment, Command, Effort, Item, ModelOption, Todo } from "../shared/protocol";
+import { ASKED, jsonSchema, systemPrompt, TOOLS, type AskInput } from "./prompt";
 import type { AgentSession, SessionEvents, SessionOptions } from "./session";
 
 type Json = any;
@@ -19,6 +20,38 @@ const QUIET = [
   "item/reasoning/summaryPartAdded",
 ];
 
+// Codex config Tack overrides for its own threads (the user's config.toml is left alone).
+const config = (codexHome: string) => [
+  "agents.enabled=false", // sub-agent tools and their instructions
+  "tools.experimental_request_user_input.enabled=false", // replaced by Tack's `ask`
+  "tools.update_plan.enabled=true", // shown as the task list
+  "include_collaboration_mode_instructions=false",
+  "features.goals=false",
+  "features.tool_suggest=false",
+  "features.apps=false",
+  `skills.config=[{path=${JSON.stringify(`${codexHome}/skills/.system/skill-installer/SKILL.md`)},enabled=false}]`,
+];
+
+// Plugins whose skills and tools are for documents and office apps, not code. `visualize` is
+// replaced by Tack's `show`.
+const DISABLED_PLUGINS = [
+  "documents@openai-primary-runtime",
+  "pdf@openai-primary-runtime",
+  "spreadsheets@openai-primary-runtime",
+  "presentations@openai-primary-runtime",
+  "template-creator@openai-primary-runtime",
+  "google-calendar@openai-curated",
+  "slack@openai-curated",
+  "visualize@openai-bundled",
+];
+
+const DYNAMIC_TOOLS = (["ask", "show"] as const).map((name) => ({
+  type: "function",
+  name,
+  description: TOOLS[name].description,
+  inputSchema: jsonSchema(name),
+}));
+
 class Rpc {
   private proc: ReturnType<typeof Bun.spawn>;
   private next = 1;
@@ -33,7 +66,8 @@ class Rpc {
     private onNotify: (method: string, params: Json) => void,
     private onRequest: (method: string, params: Json) => Promise<Json>,
   ) {
-    this.proc = Bun.spawn([bin, "app-server"], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const args = config(env.CODEX_HOME ?? `${env.HOME}/.codex`).flatMap((c) => ["-c", c]);
+    this.proc = Bun.spawn([bin, "app-server", ...args], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     this.read(this.proc.stdout as ReadableStream<Uint8Array>, (line) => this.handle(line));
     this.read(this.proc.stderr as ReadableStream<Uint8Array>, (line) => (this.stderr = (this.stderr + line + "\n").slice(-2000)));
     this.exited = this.proc.exited.then((code) => {
@@ -130,7 +164,7 @@ export class CodexSession implements AgentSession {
     this.init = this.rpc
       .request("initialize", {
         clientInfo: { name: "tack", title: "Tack", version: "0.1.0" },
-        capabilities: { experimentalApi: false, requestAttestation: false, optOutNotificationMethods: QUIET },
+        capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: QUIET },
       })
       .then(() => this.rpc.notify("initialized"));
     this.init.catch(() => {});
@@ -203,7 +237,7 @@ export class CodexSession implements AgentSession {
 
   private startThread(): Promise<string> {
     const { approvalPolicy, sandbox } = this.policy();
-    const base = { cwd: this.opts.cwd, model: this.model, approvalPolicy, sandbox };
+    const base = { cwd: this.opts.cwd, model: this.model, approvalPolicy, sandbox, baseInstructions: systemPrompt("codex") };
     return (this.thread ??= (async () => {
       await this.init;
       let result: Json;
@@ -212,7 +246,8 @@ export class CodexSession implements AgentSession {
           .request("thread/resume", { threadId: this.opts.resume, excludeTurns: true, ...base })
           .catch(() => undefined);
       }
-      result ??= await this.rpc.request("thread/start", base);
+      // Dynamic tools are stored with the thread, so only a new thread declares them.
+      result ??= await this.rpc.request("thread/start", { ...base, dynamicTools: DYNAMIC_TOOLS });
       this.events.sessionId(result.thread.id);
       return result.thread.id as string;
     })());
@@ -243,6 +278,7 @@ export class CodexSession implements AgentSession {
       model: this.model,
       effort: this.effort,
       approvalPolicy,
+      disabledPluginIds: DISABLED_PLUGINS,
       ...(sandboxPolicy ? { sandboxPolicy } : {}),
     });
     this.turnId = turn.id;
@@ -278,6 +314,13 @@ export class CodexSession implements AgentSession {
         this.events.item(item, true);
         return;
       }
+      case "turn/plan/updated":
+        return this.events.todo(
+          (p.plan as Json[]).map((s): Todo => ({
+            content: s.step,
+            status: s.status === "inProgress" ? "in_progress" : s.status,
+          })),
+        );
       case "thread/tokenUsage/updated": {
         const u = p.tokenUsage;
         if (u?.modelContextWindow) this.events.usage(u.last?.totalTokens ?? 0, u.modelContextWindow);
@@ -327,6 +370,15 @@ export class CodexSession implements AgentSession {
         const item = this.open.get(p.itemId);
         const allow = await ask("Patch", item?.kind === "tool" ? item.input : { reason: p.reason });
         return { decision: allow ? "accept" : "decline" };
+      }
+      case "item/tool/call": {
+        const text = (t: string) => ({ contentItems: [{ type: "inputText", text: t }], success: true });
+        if (p.tool === "ask") {
+          this.events.ask((p.arguments as AskInput).questions);
+          return text(ASKED);
+        }
+        if (p.tool === "show") return text("Shown to the user above your reply.");
+        return { contentItems: [{ type: "inputText", text: `Unknown tool ${p.tool}` }], success: false };
       }
       default:
         throw new Error(`Tack does not support ${method}`);
@@ -390,7 +442,15 @@ function toItem(t: Json, done: boolean): Item | undefined {
         ts,
       };
     case "dynamicToolCall":
-      return { id: t.id, kind: "tool", name: t.tool, input: t.arguments ?? {}, status: status(t.success !== false), ts };
+      return {
+        id: t.id,
+        kind: "tool",
+        name: t.tool,
+        input: t.arguments ?? {},
+        output: (t.contentItems as Json[] | undefined)?.map((c) => c.text ?? "").join("\n") || undefined,
+        status: status(t.success !== false),
+        ts,
+      };
     case "webSearch":
       return { id: t.id, kind: "tool", name: "WebSearch", input: { query: t.query }, status: status(true), ts };
     case "imageView":
@@ -400,10 +460,12 @@ function toItem(t: Json, done: boolean): Item | undefined {
   }
 }
 
-// Codex runs everything as `/bin/zsh -lc '...'`; show the command itself.
+// Codex runs everything as `/bin/zsh -lc '...'` (or "..."); show the command itself.
 function unwrap(command: string): string {
-  const m = command.match(/^\S*\/(?:z|ba)?sh -lc '([\s\S]*)'$/);
-  return m ? m[1]!.replaceAll("'\\''", "'") : command;
+  const single = command.match(/^\S*\/(?:z|ba)?sh -lc '([\s\S]*)'$/);
+  if (single) return single[1]!.replaceAll("'\\''", "'");
+  const double = command.match(/^\S*\/(?:z|ba)?sh -lc "([\s\S]*)"$/);
+  return double ? double[1]!.replace(/"'(.*?)'"/g, "$1").replace(/\\(["\\$`])/g, "$1") : command;
 }
 
 function mcpText(result: Json): string | undefined {

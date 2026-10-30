@@ -25,6 +25,7 @@ export function Sidebar() {
   const hasProjects = useApp((s) => s.projects.length > 0);
 
   const waiting = new Set(Object.values(approvals).map((a) => a.threadId));
+  for (const t of Object.values(threads)) if (t.questions?.length) waiting.add(t.id);
   const sections: Record<Section, Thread[]> = { attention: [], working: [], active: [], settled: [] };
   for (const t of Object.values(threads).sort((a, b) => b.updatedAt - a.updatedAt)) {
     if (waiting.has(t.id) || t.status === "error" || (unread[t.id] && t.status !== "running")) sections.attention.push(t);
@@ -109,13 +110,15 @@ function Settled({ threads }: { threads: Thread[] }) {
 function ThreadRow({ thread }: { thread: Thread }) {
   const active = useApp((s) => s.activeThreadId === thread.id);
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
-  const waiting = useApp((s) => Object.values(s.approvals).some((a) => a.threadId === thread.id));
+  const approval = useApp((s) => Object.values(s.approvals).some((a) => a.threadId === thread.id));
+  const asking = !!thread.questions?.length;
+  const waiting = approval || asking;
   const unread = useApp((s) => !!s.unread[thread.id]);
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const status = waiting
-    ? { dot: "bg-brass", label: "Needs approval" }
+    ? { dot: "bg-brass", label: asking && !approval ? "Has a question" : "Needs approval" }
     : thread.status === "error"
       ? { dot: "bg-danger", label: "Failed" }
       : thread.status === "running"
