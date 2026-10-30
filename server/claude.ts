@@ -115,14 +115,25 @@ export class ClaudeSession {
     await this.q.setModel(model);
   }
 
+  // Aliases (opus, sonnet, ...) always point at the current generation, so they're the
+  // "latest" group, strongest first. "default" duplicates one of them and is dropped.
   async models(): Promise<ModelOption[]> {
-    const list = await this.q.supportedModels();
-    return list.map((m) => ({
+    const list = (await this.q.supportedModels()).filter((m) => m.value !== "default");
+    const rank = ["fable", "opus", "sonnet", "haiku"];
+    const options = list.map((m): ModelOption => ({
       value: m.value,
       label: m.displayName,
       description: m.description,
       efforts: m.supportedEffortLevels ?? [],
+      group: m.value.startsWith("claude-") ? "more" : "latest",
     }));
+    // Latest by tier; the rest newest first, by the version in their name.
+    const version = (o: ModelOption) => Number(o.label.match(/[\d.]+$/)?.[0] ?? 0);
+    return options.sort((a, b) =>
+      a.group !== b.group
+        ? a.group === "latest" ? -1 : 1
+        : a.group === "latest" ? rank.indexOf(a.value) - rank.indexOf(b.value) : version(b) - version(a),
+    );
   }
 
   close() {
@@ -203,6 +214,7 @@ export class ClaudeSession {
           const text = d.text ?? d.thinking ?? "";
           (open.item as { text: string }).text += text;
           if (!open.shown) {
+            if (!(open.item as { text: string }).text.trim()) return;
             open.shown = true;
             this.events.item({ ...open.item }, false);
           } else this.events.delta(open.item.id, text);

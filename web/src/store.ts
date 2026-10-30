@@ -14,6 +14,7 @@ import type {
   Queued,
   Thread,
 } from "../../shared/protocol";
+import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../../shared/protocol";
 import { call, onConnect, onEvent } from "./rpc";
 
 export interface Transcript {
@@ -81,7 +82,6 @@ export async function openThread(threadId: string) {
     save("tack.unread", unread);
     return { activeThreadId: threadId, draft: undefined, unread };
   });
-  save("tack.active", threadId);
   const { items, queue, streaming, approvals } = await call("thread.open", { threadId });
   const t: Transcript = { order: [], byId: {} };
   for (const item of [...items, ...streaming]) {
@@ -111,13 +111,12 @@ function recentThread(): Thread | undefined {
 export function startDraft(projectId = currentProjectId()) {
   if (!projectId) return;
   const s = get();
-  const last = recentThread();
   set({
     activeThreadId: undefined,
     draft: {
       projectId,
-      model: s.draft?.model ?? last?.model ?? s.models[0]?.value ?? "default",
-      effort: s.draft?.effort ?? last?.effort ?? "high",
+      model: s.draft?.model ?? DEFAULT_MODEL,
+      effort: s.draft?.effort ?? DEFAULT_EFFORT,
       access: s.draft?.access ?? "full",
     },
   });
@@ -167,10 +166,12 @@ function apply(e: Event) {
         return { threads: { ...s.threads, [e.thread.id]: e.thread }, unread };
       });
     case "thread.removed":
-      return set((s) => {
+      set((s) => {
         const { [e.threadId]: _, ...threads } = s.threads;
         return { threads, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
       });
+      if (!get().activeThreadId && !get().draft) startDraft();
+      return;
     case "models":
       return set({ models: e.models });
     case "item":
@@ -217,7 +218,8 @@ export function startSync() {
   onConnect(async () => {
     const { projects, threads, models } = await call("state.get", {});
     set({ ready: true, projects, threads: Object.fromEntries(threads.map((t) => [t.id, t])), models });
-    const active = get().activeThreadId ?? load<string | undefined>("tack.active", undefined);
+    // Launch on a new thread. On a reconnect, stay where you were.
+    const active = get().activeThreadId;
     if (active && get().threads[active]) await openThread(active);
     else if (!get().draft) startDraft();
   });

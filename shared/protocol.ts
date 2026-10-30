@@ -32,7 +32,12 @@ export interface ModelOption {
   label: string;
   description: string;
   efforts: Effort[];
+  // "latest": the current generation, listed first. "more": older or niche models, tucked away.
+  group: "latest" | "more";
 }
+
+export const DEFAULT_MODEL = "opus";
+export const DEFAULT_EFFORT: Effort = "high";
 
 export interface ImageAttachment {
   kind: "image";

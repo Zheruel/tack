@@ -1,7 +1,7 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ArrowUp, Check, ChevronDown, Image as ImageIcon, Paperclip, Square, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ChevronRight, Image as ImageIcon, Paperclip, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { Access, Attachment, Effort } from "../../../shared/protocol";
+import { DEFAULT_EFFORT, type Access, type Attachment, type Effort } from "../../../shared/protocol";
 import { onFileDrop } from "../native";
 import { call } from "../rpc";
 import { sendDraft, updateDraft, useApp } from "../store";
@@ -151,6 +151,7 @@ export function Composer({ threadId }: { threadId?: string }) {
             }}
           />
           <ModelPicker config={config} onPick={configure} />
+          <EffortPicker config={config} onPick={configure} />
           <AccessPicker config={config} onPick={configure} />
           <div className="flex-1" />
           {running && (
@@ -248,44 +249,58 @@ function Trigger({ children, title }: { children: React.ReactNode; title: string
   return (
     <Menu.Trigger
       title={title}
-      className="flex h-7 items-center gap-1 rounded-lg px-2 text-[12.5px] text-dim outline-none hover:bg-hover hover:text-ink data-[state=open]:bg-hover data-[state=open]:text-ink"
+      className="flex h-[30px] items-center gap-1.5 rounded-[10px] px-2.5 text-[13px] text-ink/80 outline-none transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-hover data-[state=open]:text-ink"
     >
       {children}
-      <ChevronDown size={12} className="text-faint" />
+      <ChevronDown size={13} className="text-faint" />
     </Menu.Trigger>
   );
 }
 
-const EFFORT: Record<Effort, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
-
-// Model and effort in one menu: "Opus 5 · High".
 function ModelPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
   const models = useApp((s) => s.models);
   const current = models.find((m) => m.value === config.model);
-  const efforts = current?.efforts ?? [];
+  const latest = models.filter((m) => m.group === "latest");
+  const more = models.filter((m) => m.group === "more");
+  const pick = (model: string) => {
+    const efforts = models.find((m) => m.value === model)?.efforts ?? [];
+    // Keep the effort if the new model supports it; otherwise fall back to the default.
+    onPick(efforts.length && !efforts.includes(config.effort) ? { model, effort: DEFAULT_EFFORT } : { model });
+  };
   return (
     <Menu.Root>
-      <Trigger title="Model and effort">
-        {current?.label ?? config.model}
-        {efforts.length > 0 && <span className="text-faint">{EFFORT[config.effort]}</span>}
-      </Trigger>
+      <Trigger title="Model">{current?.label ?? config.model}</Trigger>
       <MenuContent>
-        {models.map((m) => (
+        <Menu.Label className="px-2.5 pt-1.5 pb-1 text-[11.5px] text-faint">Model</Menu.Label>
+        {latest.map((m) => (
           <MenuItem
             key={m.value}
             selected={m.value === config.model}
             label={m.label}
             hint={m.description}
-            onSelect={() => onPick({ model: m.value })}
+            onSelect={() => pick(m.value)}
           />
         ))}
-        {efforts.length > 0 && (
+        {more.length > 0 && (
           <>
             <Menu.Separator className="mx-2 my-1.5 h-px bg-line" />
-            <Menu.Label className="px-2.5 pt-1 pb-1 text-[11.5px] text-faint">Effort</Menu.Label>
-            {efforts.map((e) => (
-              <MenuItem key={e} selected={e === config.effort} label={EFFORT[e]} onSelect={() => onPick({ effort: e })} />
-            ))}
+            <Menu.Sub>
+              <Menu.SubTrigger className="flex cursor-default items-center gap-2 rounded-xl px-2.5 py-2 text-[13px] text-dim outline-none data-highlighted:bg-hover data-highlighted:text-ink data-[state=open]:bg-hover">
+                <span className="flex-1">More models</span>
+                {more.some((m) => m.value === config.model) && <span className="text-[11.5px] text-brass">{current?.label}</span>}
+                <ChevronRight size={13} className="text-faint" />
+              </Menu.SubTrigger>
+              <Menu.Portal>
+                <Menu.SubContent
+                  sideOffset={6}
+                  className="z-50 max-h-[60vh] min-w-52 overflow-y-auto rounded-2xl border border-line bg-raised p-1.5 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]"
+                >
+                  {more.map((m) => (
+                    <MenuItem key={m.value} selected={m.value === config.model} label={m.label} onSelect={() => pick(m.value)} />
+                  ))}
+                </Menu.SubContent>
+              </Menu.Portal>
+            </Menu.Sub>
           </>
         )}
       </MenuContent>
@@ -293,19 +308,78 @@ function ModelPicker({ config, onPick }: { config: Config; onPick: (p: Partial<C
   );
 }
 
-function AccessPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
+const EFFORTS: Record<Effort, { label: string; hint: string; level: number }> = {
+  low: { label: "Low", hint: "Quick answers, light reasoning", level: 1 },
+  medium: { label: "Medium", hint: "Balanced speed and depth", level: 2 },
+  high: { label: "High", hint: "Thorough. The default", level: 3 },
+  xhigh: { label: "Extra high", hint: "Deeper reasoning for hard problems", level: 4 },
+  max: { label: "Max", hint: "Everything it has. Slowest", level: 5 },
+};
+
+// Five ascending bars, filled up to the effort level.
+function EffortMeter({ level }: { level: number }) {
+  return (
+    <span className="flex h-3 items-end gap-[2px]" aria-hidden>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <span
+          key={i}
+          style={{ height: `${4 + i * 1.6}px` }}
+          className={`w-[2.5px] rounded-full ${i <= level ? "bg-brass" : "bg-line"}`}
+        />
+      ))}
+    </span>
+  );
+}
+
+function EffortPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
+  const models = useApp((s) => s.models);
+  const efforts = models.find((m) => m.value === config.model)?.efforts ?? [];
+  if (!efforts.length) return null;
+  const current = EFFORTS[config.effort];
   return (
     <Menu.Root>
-      <Trigger title="Permissions">{config.access === "full" ? "Full access" : "Ask first"}</Trigger>
+      <Trigger title="Effort: how hard the model thinks">
+        <EffortMeter level={current.level} />
+        {current.label}
+      </Trigger>
+      <MenuContent>
+        <Menu.Label className="px-2.5 pt-1.5 pb-1 text-[11.5px] text-faint">Effort</Menu.Label>
+        {efforts.map((e) => (
+          <MenuItem
+            key={e}
+            selected={e === config.effort}
+            label={
+              <span className="flex items-center gap-2.5">
+                <EffortMeter level={EFFORTS[e].level} />
+                {EFFORTS[e].label}
+              </span>
+            }
+            hint={EFFORTS[e].hint}
+            onSelect={() => onPick({ effort: e })}
+          />
+        ))}
+      </MenuContent>
+    </Menu.Root>
+  );
+}
+
+function AccessPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
+  const full = config.access === "full";
+  return (
+    <Menu.Root>
+      <Trigger title="Permissions">
+        {full ? <ShieldOff size={13} className="text-faint" /> : <ShieldCheck size={13} className="text-brass" />}
+        {full ? "Full access" : "Ask first"}
+      </Trigger>
       <MenuContent>
         <MenuItem
-          selected={config.access === "full"}
+          selected={full}
           label="Full access"
           hint="Edits and commands run without asking"
           onSelect={() => onPick({ access: "full" })}
         />
         <MenuItem
-          selected={config.access === "ask"}
+          selected={!full}
           label="Ask first"
           hint="Approve anything your Claude settings don't allow"
           onSelect={() => onPick({ access: "ask" })}

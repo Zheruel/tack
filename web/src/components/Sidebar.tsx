@@ -125,7 +125,7 @@ function ThreadRow({ thread }: { thread: Thread }) {
     >
       <div className="min-w-0 flex-1">
         <div
-          className={`truncate text-[13px] leading-snug ${
+          className={`truncate text-[13px] leading-snug group-hover:pr-14 ${
             active || unread || waiting ? "text-ink" : "text-dim group-hover:text-ink"
           } ${unread ? "font-medium" : ""}`}
         >

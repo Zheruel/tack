@@ -89,13 +89,17 @@ input {
   background: color-mix(in oklab, var(--color-brass) 35%, transparent);
 }
 
-:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--color-brass) 70%, transparent);
-  outline-offset: 2px;
-}
-
-textarea:focus-visible {
-  outline: none;
+/* In the base layer so utilities like outline-none (menus, inputs) win. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--color-brass) 70%, transparent);
+    outline-offset: 2px;
+  }
+  textarea:focus-visible,
+  [role="menuitem"]:focus-visible,
+  [role="menu"]:focus-visible {
+    outline: none;
+  }
 }
 
 ::-webkit-scrollbar {

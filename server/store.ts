@@ -34,6 +34,8 @@ export class Store {
     const cols = this.db.query<{ name: string }, []>("PRAGMA table_info(threads)").all().map((c) => c.name);
     // null: follow the auto rule; 1: settled by hand; 0: kept open by hand.
     if (!cols.includes("settled")) this.db.run("ALTER TABLE threads ADD COLUMN settled INTEGER");
+    // "default" was an alias for Opus; threads now name the model explicitly.
+    this.db.run("UPDATE threads SET model = 'opus' WHERE model = 'default'");
     this.db.run("PRAGMA foreign_keys = ON");
   }
 

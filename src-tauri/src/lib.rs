@@ -51,7 +51,10 @@ fn sidecar_command() -> Command {
 }
 
 fn start_sidecar(app: &tauri::AppHandle, sidecar: Arc<Sidecar>) {
-    let data_dir = app.path().app_data_dir().expect("app data dir");
+    // TACK_DATA_DIR overrides the default, e.g. for a throwaway profile.
+    let data_dir = std::env::var_os("TACK_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| app.path().app_data_dir().expect("app data dir"));
     let mut cmd = sidecar_command();
     cmd.env("TACK_DATA_DIR", data_dir)
         // Our stdin closing is the sidecar's signal to exit.

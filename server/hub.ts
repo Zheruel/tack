@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { ClaudeSession } from "./claude";
 import type { Store } from "./store";
+import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../shared/protocol";
 import type {
   Access,
   ApprovalRequest,
@@ -71,9 +72,7 @@ export class Hub {
   }
 
   defaultModel(): { model: string; effort: Effort } {
-    const last = this.store.threads()[0];
-    if (last) return { model: last.model, effort: last.effort };
-    return { model: this.models[0]?.value ?? "default", effort: "high" };
+    return { model: DEFAULT_MODEL, effort: DEFAULT_EFFORT };
   }
 
   // ---- writes
@@ -146,7 +145,7 @@ export class Hub {
   // Ask Claude for its model list once, without sending a prompt.
   async loadModels() {
     const probe = new ClaudeSession(
-      { cwd: process.env.HOME ?? "/", model: "default", effort: "high", access: "full", claudePath: this.env.claudePath, env: this.env.vars },
+      { cwd: process.env.HOME ?? "/", model: DEFAULT_MODEL, effort: DEFAULT_EFFORT, access: "full", claudePath: this.env.claudePath, env: this.env.vars },
       { item() {}, delta() {}, sessionId() {}, turnEnd() {}, closed() {}, approve: async () => false },
     );
     try {
