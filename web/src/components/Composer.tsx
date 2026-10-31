@@ -418,7 +418,7 @@ export function Composer({ threadId }: { threadId?: string }) {
       </div>
       <div className="flex items-center gap-0.5 px-1.5 pt-1.5">
         <WorkspaceMenu />
-        {projectId && <BranchPicker projectId={projectId} />}
+        {projectId && <BranchPicker key={projectId} projectId={projectId} />}
         <div className="flex-1" />
         <AccessMenu config={config} onPick={configure} />
       </div>

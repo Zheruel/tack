@@ -91,6 +91,7 @@ type Snapshot = {
   width: number;
   height: number;
   generation?: number;
+  app?: string;
   refs: Map<string, string>;
 };
 type Context = {
@@ -301,7 +302,7 @@ export class DeviceService {
                   throw Error(
                     "The ref is not from this device's latest semantic snapshot. Use device_snapshot or tap/type.",
                   );
-                await this.ensureAgent(context, scope);
+                await this.ensureAgent(context, scope, snapshot.app);
                 evidence = await context.agent!.call(
                   "fill",
                   { ref, text: action.text },
@@ -430,9 +431,7 @@ export class DeviceService {
     if (x >= snapshot.width || y >= snapshot.height)
       throw Error("Coordinates are outside the current device screenshot.");
   }
-  private async ensureAgent(context: Context, signal: AbortSignal) {
-    context.agent ??= this.runtime.createAgent(context.device);
-    if (context.sdkApp) return;
+  private async ensureAgent(context: Context, signal: AbortSignal, expectedApp?: string) {
     const foreground = (await this.runtime.foreground(
       context.device,
       signal,
@@ -443,6 +442,10 @@ export class DeviceService {
       throw Error(
         "Open the target app with device_act openApp before semantic text input.",
       );
+    if (expectedApp && app !== expectedApp)
+      throw Error("The foreground app changed. Read device_snapshot before using semantic input.");
+    context.agent ??= this.runtime.createAgent(context.device);
+    if (context.sdkApp === app) return;
     await context.agent.call("openApp", { app }, signal);
     context.sdkApp = app;
   }
@@ -454,7 +457,7 @@ export class DeviceService {
     signal: AbortSignal,
     displayOnly = false,
   ): Promise<ToolResult> {
-    const shot = await this.runtime.screenshot(context.device, signal);
+    let shot = await this.runtime.screenshot(context.device, signal);
     signal.throwIfAborted();
     const previous = context.snapshot;
     const snapshot: Snapshot = {
@@ -481,9 +484,10 @@ export class DeviceService {
     if (includeTree && !displayOnly) {
       try {
         if (context.sdkApp) {
-          context.agent ??= this.runtime.createAgent(context.device);
-          const native = await context.agent.call("snapshot", {}, signal);
+          await this.ensureAgent(context, signal);
+          const native = await context.agent!.call("snapshot", {}, signal);
           snapshot.generation = native.refsGeneration;
+          snapshot.app = context.sdkApp;
           const visit = (nodes: any[]) => {
             for (const n of nodes) {
               if (typeof n.ref === "string")
@@ -498,6 +502,12 @@ export class DeviceService {
           };
           visit(native.nodes ?? []);
           tree = native;
+          // The SDK may activate its target. Pair refs with the resulting screen.
+          shot = await this.runtime.screenshot(context.device, signal);
+          snapshot.width = shot.width;
+          snapshot.height = shot.height;
+          context.image = `data:image/png;base64,${shot.png.toString("base64")}`;
+          this.emit(threadId);
         } else tree = await this.runtime.ax(context.device, signal);
       } catch (error) {
         signal.throwIfAborted();
@@ -506,6 +516,7 @@ export class DeviceService {
     } else if (previous) {
       snapshot.refs = previous.refs;
       snapshot.generation = previous.generation;
+      snapshot.app = previous.app;
     }
     signal.throwIfAborted();
     return {
@@ -598,9 +609,8 @@ export class DeviceService {
     if (this.disposed) return;
     this.disposed = true;
     await Promise.allSettled(
-      [...this.states.keys()].map((id) => this.closeThread(id)),
+      [...[...this.states.keys()].map((id) => this.closeThread(id)), this.runtime.dispose()],
     );
-    await this.runtime.dispose();
   }
 }
 

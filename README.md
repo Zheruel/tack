@@ -50,15 +50,13 @@ The pen captures the current page for drawing. Drawing controls appear after you
 
 Claude and Codex share Tack's Cua Driver tools for native Mac apps. Ask for the task; in Full access, Tack opens the needed apps automatically. Work stays in the background whenever possible, with a separate agent cursor that leaves your mouse alone. The agent can bring a window forward when needed without asking. Apps that require the system pointer may remain unsupported. Web and Chrome tasks use the built-in sidebar browser. Ask mode keeps app approvals. First use opens macOS permission setup, then continues when permission is granted. The monitor icon and chat Stop end control and revoke access. Finishing a turn stops the native runtime. Apps remain open.
 
+The build downloads a checksum-pinned, MIT-licensed Cua Driver runtime and bundles it with its notices. No separate Cua installation, API key, account, or agent is needed. Cua telemetry and automatic update checks are disabled.
+
 ## Mobile devices
 
 Open Devices with the phone icon or `⌘⇧D`, or ask the agent to test an iOS or Android app. Tack chooses an installed simulator or emulator, boots it in the background, and shows an interactive screen in the sidebar. You and the agent can tap, swipe, type, and navigate there without using your Mac mouse. Closing the preview releases control; devices keep running until explicitly shut down or Tack exits. Tack only shuts down devices it booted itself.
 
 Device support uses Expo Device Hub and agent-device, pinned to the versions used by T3 Code. First use prepares their runtime automatically. The Mac needs Node.js 22.12+, npm, and the relevant Xcode or Android SDK runtimes.
-
-Grant Tack Accessibility and Screen Recording permission on first use, then restart Tack. Desktop input stays in the background. App access is separate from the full-access setting. Web testing continues to use Tack's isolated browser.
-
-The build downloads a checksum-pinned, MIT-licensed Cua Driver runtime and bundles it with its notices. No separate Cua installation, API key, account, or agent is needed. Cua telemetry and automatic update checks are disabled.
 
 ## How it works
 

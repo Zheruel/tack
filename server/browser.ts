@@ -24,7 +24,7 @@ export type BrowserToolName = keyof typeof BROWSER_TOOLS;
 export type BrowserContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: "image/png" };
 export type BrowserResult = { content: BrowserContent[]; isError?: boolean };
 type Tab = { page: Page; refs: BrowserRefs; view: BrowserView; image?: string; title: string };
-type Thread = { context: BrowserContext; tabs: Map<string, Tab>; current?: string; human?: string };
+type Thread = { context: BrowserContext; tabs: Map<string, Tab>; current?: string; human?: string; humanEpoch?: number };
 
 const MAX_IMAGE = 4 * 1024 * 1024;
 const MAX_TABS = 10;
@@ -183,6 +183,7 @@ export class BrowserService {
       thread.human = viewerId; // Reserve before draining agent work; queued agent writes cannot interleave.
       for (const tab of thread.tabs.values()) tab.refs.clear();
     }
+    thread.humanEpoch = (thread.humanEpoch ?? 0) + 1;
     return this.enqueue(threadId, async () => {
       if (thread.human !== viewerId || thread.current !== tabId) throw new Error("Browser control changed. Click the page to continue.");
       return tab.view.input(input);
@@ -192,11 +193,12 @@ export class BrowserService {
   private async release(threadId: string, viewerId: string) {
     const thread = this.threads.get(threadId);
     if (thread?.human !== viewerId) return;
+    const epoch = thread.humanEpoch;
     await this.enqueue(threadId, async () => {
       if (thread.human !== viewerId) return;
       await Promise.allSettled([...thread.tabs.values()].map((tab) => tab.view.release()));
       for (const tab of thread.tabs.values()) tab.refs.clear();
-      thread.human = undefined;
+      if (thread.humanEpoch === epoch) thread.human = undefined;
     });
   }
 
@@ -257,18 +259,18 @@ export class BrowserService {
       const owner = this.threads.get(threadId)?.human;
       if (owner && owner !== viewerId && name !== "preview_status" && name !== "preview_snapshot") throw new Error("The user controls this browser page. Pause browser actions until they return to the chat, then take a fresh snapshot.");
       let cancelled = false;
+      let activePage: Page | undefined;
       const closeActive = () => {
-        const thread = this.threads.get(threadId);
-        const selected = (parsed.data as { tabId?: string }).tabId ?? thread?.current;
-        if (selected) void thread?.tabs.get(selected)?.page.close().catch(() => {});
+        void activePage?.close().catch(() => {});
       };
       const cancel = () => { cancelled = true; closeActive(); };
       signal?.addEventListener("abort", cancel, { once: true });
       try {
-        const result = await this.run(threadId, name as BrowserToolName, parsed.data as Record<string, any>, () => cancelled, !!viewerId);
+        const ownPage = (page: Page) => { activePage = page; if (cancelled) closeActive(); };
+        const result = await this.run(threadId, name as BrowserToolName, parsed.data as Record<string, any>, () => cancelled, !!viewerId, ownPage);
         if (viewerId && !cancelled && ["preview_open", "preview_navigate", "preview_act"].includes(name)) {
           const current = this.threads.get(threadId)?.current;
-          if (current) await this.run(threadId, "preview_snapshot", { tabId: current }, () => cancelled);
+          if (current) await this.run(threadId, "preview_snapshot", { tabId: current }, () => cancelled, false, ownPage);
         }
         if (cancelled) { closeActive(); throw aborted(); }
         return result;
@@ -277,7 +279,7 @@ export class BrowserService {
     finally { release(); }
   }
 
-  private async run(id: string, name: BrowserToolName, input: Record<string, any>, cancelled: () => boolean, viewer = false): Promise<BrowserResult> {
+  private async run(id: string, name: BrowserToolName, input: Record<string, any>, cancelled: () => boolean, viewer = false, ownPage: (page: Page) => void = () => {}): Promise<BrowserResult> {
     if (name === "preview_status") return textResult(this.status(id));
     let thread = this.threads.get(id);
     if (name === "preview_open") {
@@ -289,6 +291,7 @@ export class BrowserService {
       if (!selected) {
         if (thread.tabs.size >= MAX_TABS) throw new Error(`Maximum ${MAX_TABS} tabs per thread.`);
         const page = await thread.context.newPage();
+        ownPage(page);
         if (cancelled()) { await page.close(); throw aborted(); }
         selected = crypto.randomUUID();
         const tabId = selected;
@@ -313,6 +316,7 @@ export class BrowserService {
       thread.current = selected;
       const viewport = this.viewports.get(id);
       const selectedTab = thread.tabs.get(selected)!;
+      ownPage(selectedTab.page);
       if (viewport && JSON.stringify(selectedTab.page.viewportSize()) !== JSON.stringify(viewport)) {
         selectedTab.refs.clear();
         selectedTab.image = undefined;
@@ -331,6 +335,7 @@ export class BrowserService {
       this.emit(id);
     }
     const page = tab.page;
+    ownPage(page);
     if (name === "preview_close") { await page.close(); this.emit(id); return textResult(this.status(id)); }
     if (name === "preview_navigate") { await this.navigate(tab, input.url, input.timeoutMs); this.emit(id); return textResult(this.status(id)); }
     if (name === "preview_snapshot") {

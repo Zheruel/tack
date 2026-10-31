@@ -47,12 +47,12 @@ function Card({ threadId, questions, via }: { threadId: string; questions: Quest
       setError(e instanceof Error ? e.message : String(e));
     }
   };
-  const submit = (finalPicks = picks) => {
-    const lines = questions.map((x, i) => `${x.header}: ${[...finalPicks[i]!, typed[i]!.trim()].filter(Boolean).join(", ") || "your call"}`);
+  const submit = (finalPicks = picks, finalTyped = typed) => {
+    const lines = questions.map((x, i) => `${x.header}: ${[...finalPicks[i]!, finalTyped[i]!.trim()].filter(Boolean).join(", ") || "your call"}`);
     void reply(lines.join("\n"));
   };
   const skip = () => void reply("Your call: go with your recommendations.");
-  const next = (finalPicks = picks) => (last ? submit(finalPicks) : setIndex(index + 1));
+  const next = (finalPicks = picks, finalTyped = typed) => (last ? submit(finalPicks, finalTyped) : setIndex(index + 1));
 
   const pick = (label: string) => {
     if (sending) return;
@@ -61,8 +61,9 @@ function Card({ threadId, questions, via }: { threadId: string; questions: Quest
     );
     setPicks(updated);
     if (!q.multiSelect) {
-      setTyped((t) => t.map((v, i) => (i === index ? "" : v)));
-      next(updated);
+      const cleared = typed.map((v, i) => (i === index ? "" : v));
+      setTyped(cleared);
+      next(updated, cleared);
     }
   };
 

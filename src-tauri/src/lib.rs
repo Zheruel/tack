@@ -196,7 +196,8 @@ pub fn run() {
             // Closing the last macOS window is not quitting the app; stop only on Exit.
             let child = sidecar.child.lock().unwrap().take();
             if let Some(child) = child {
-                stop_sidecar(child, Duration::from_secs(6));
+                // Allow the sidecar's 20-second owned-device cleanup deadline to finish.
+                stop_sidecar(child, Duration::from_secs(22));
             }
         }
     });

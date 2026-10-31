@@ -294,9 +294,9 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  const timeout = setTimeout(() => process.exit(0), 5000).unref();
-  await hub.shutdown();
-  await surfaces.dispose();
+  // Device cleanup can need a bounded daemon retirement and simulator shutdown.
+  const timeout = setTimeout(() => process.exit(0), 20_000).unref();
+  await Promise.allSettled([hub.shutdown(), surfaces.dispose()]);
   clearTimeout(timeout);
   process.exit(0);
 }

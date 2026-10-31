@@ -90,6 +90,14 @@ export class BrowserView {
   }
 
   async input(input: BrowserInput): Promise<{ clipboard?: string }> {
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; void this.page.close().catch(() => {}); }, 10000);
+    try { return await this.deliverInput(input); }
+    catch (error) { if (timedOut) throw new Error("Browser input timed out; its tab was closed. Other tabs are still available."); throw error; }
+    finally { clearTimeout(timer); }
+  }
+
+  private async deliverInput(input: BrowserInput): Promise<{ clipboard?: string }> {
     const session = await this.cdp();
     const size = this.page.viewportSize() ?? { width: 1280, height: 800 };
     if (input.type === "mouse" || input.type === "wheel") {

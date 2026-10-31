@@ -77,6 +77,12 @@ export class DeviceRuntime {
   private booted = new Map<string, DeviceInfo>();
   private emulators = new Map<string, ReturnType<typeof Bun.spawn>>();
   private stopController = new AbortController();
+  private disposing?: Promise<void>;
+  private agents = new Set<DeviceAgent>();
+  private emulatorLifetimes = new WeakMap<
+    DeviceInfo, ReturnType<typeof Bun.spawn>
+  >();
+  private agentDevices = new Map<DeviceAgent, DeviceInfo>();
   constructor(
     readonly directory: string,
     env: Env = process.env,
@@ -128,6 +134,16 @@ export class DeviceRuntime {
     return signal
       ? AbortSignal.any([signal, this.stopController.signal])
       : this.stopController.signal;
+  }
+  private assertDeviceLive(device: DeviceInfo) {
+    const child = this.emulatorLifetimes.get(device);
+    if (
+      child &&
+      (child.exitCode !== null || this.emulators.get(device.id) !== child)
+    )
+      throw Error(
+        "This chat's Android emulator has stopped. Close it and open the device again.",
+      );
   }
   toolPath(name: keyof typeof DEVICE_VERSIONS) {
     return join(
@@ -341,7 +357,7 @@ export class DeviceRuntime {
         "--hide-boot-device",
         ...(process.platform === "darwin" ? [] : ["--platform", "android"]),
       ],
-      { env: this.env, stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+      { env: this.env, stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true },
     );
     this.hub = child;
     this.hubOrigin = undefined;
@@ -401,8 +417,10 @@ export class DeviceRuntime {
       }
     } catch (error) {
       try {
-        child.kill("SIGKILL");
-      } catch {}
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        try { child.kill("SIGKILL"); } catch {}
+      }
       await child.exited;
       if (this.hub === child) {
         this.hub = undefined;
@@ -434,7 +452,12 @@ export class DeviceRuntime {
   }
   async boot(device: DeviceInfo, signal?: AbortSignal) {
     const scope = this.scope(signal);
-    if (device.booted) return device;
+    if (device.booted) {
+      const child = device.platform === "android" ? this.emulators.get(device.id) : undefined;
+      if (child) this.emulatorLifetimes.set(device, child);
+      this.assertDeviceLive(device);
+      return device;
+    }
     if (device.platform === "ios") {
       await deviceRun(
         ["/usr/bin/xcrun", "simctl", "boot", device.id],
@@ -512,6 +535,16 @@ export class DeviceRuntime {
     const running = { ...device, id: `emulator-${port}`, booted: true };
     this.emulators.set(running.id, child);
     this.booted.set(`android:${running.id}`, running);
+    this.emulatorLifetimes.set(running, child);
+    void child.exited.then(() => {
+      if (this.emulators.get(running.id) === child) {
+        this.emulators.delete(running.id);
+        this.booted.delete(`android:${running.id}`);
+      }
+      for (const [agent, device] of this.agentDevices)
+        if (this.emulatorLifetimes.get(device) === child)
+          void agent.close().catch(() => {});
+    });
     const until = Date.now() + 180_000;
     try {
       while (true) {
@@ -554,18 +587,22 @@ export class DeviceRuntime {
           } catch {}
         }
       await child.exited;
-      this.emulators.delete(running.id);
-      this.booted.delete(`android:${running.id}`);
+      if (this.emulators.get(running.id) === child) {
+        this.emulators.delete(running.id);
+        this.booted.delete(`android:${running.id}`);
+      }
       throw error;
     }
   }
   async attach(device: DeviceInfo, signal?: AbortSignal) {
+    this.assertDeviceLive(device);
     if (device.platform === "ios")
       await this.hubRequest("/vendor/serve-sim/grid/api/start", signal, {
         udid: device.id,
       });
   }
   async screenshot(device: DeviceInfo, signal?: AbortSignal) {
+    this.assertDeviceLive(device);
     const response = await this.hubRequest(
       `/vendor/${device.platform === "ios" ? "serve-sim" : "serve-emu"}/api/screenshot?device=${encodeURIComponent(device.id)}`,
       signal,
@@ -577,6 +614,7 @@ export class DeviceRuntime {
     return { png, width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
   }
   async ax(device: DeviceInfo, signal?: AbortSignal) {
+    this.assertDeviceLive(device);
     const path =
       device.platform === "ios"
         ? `/vendor/serve-sim/helper/${encodeURIComponent(device.id)}/ax`
@@ -584,6 +622,7 @@ export class DeviceRuntime {
     return (await this.hubRequest(path, signal)).json();
   }
   async foreground(device: DeviceInfo, signal?: AbortSignal) {
+    this.assertDeviceLive(device);
     if (device.platform === "ios")
       return (
         await this.hubRequest(
@@ -606,6 +645,7 @@ export class DeviceRuntime {
     signal: AbortSignal,
   ) {
     signal.throwIfAborted();
+    this.assertDeviceLive(device);
     if (!this.adb || device.platform !== "android")
       throw Error("Android input is unavailable.");
     const raw = await deviceRun(
@@ -653,6 +693,7 @@ export class DeviceRuntime {
       ];
     else throw Error("Unsupported Android input action.");
     signal.throwIfAborted();
+    this.assertDeviceLive(device);
     // Drain this bounded native gesture through its release before Stop admits another action.
     await deviceRun(
       [this.adb, "-s", device.id, "shell", "input", ...input],
@@ -663,6 +704,7 @@ export class DeviceRuntime {
     signal.throwIfAborted();
   }
   inputUrl(device: DeviceInfo) {
+    this.assertDeviceLive(device);
     if (!this.hubOrigin) throw Error("Device runtime is stopped.");
     return (
       this.hubOrigin.replace(/^http/, "ws") +
@@ -672,6 +714,7 @@ export class DeviceRuntime {
     );
   }
   inputProtocols(device: DeviceInfo) {
+    this.assertDeviceLive(device);
     if (this.stopped || !this.hubToken)
       throw Error("Device runtime is stopped.");
     return [
@@ -679,15 +722,26 @@ export class DeviceRuntime {
     ];
   }
   createAgent(device: DeviceInfo) {
-    return new DeviceAgent(
+    if (this.stopped) throw Error("Device runtime is stopped.");
+    this.assertDeviceLive(device);
+    const agent = new DeviceAgent(
       this.node!,
       this.toolPath("agent-device"),
       join(this.directory, "sessions", crypto.randomUUID()),
       device,
       this.env,
+      () => {
+        this.agents.delete(agent);
+        this.agentDevices.delete(agent);
+      },
+      () => this.assertDeviceLive(device),
     );
+    this.agents.add(agent);
+    this.agentDevices.set(agent, device);
+    return agent;
   }
   async shutdown(device: DeviceInfo, signal?: AbortSignal) {
+    this.assertDeviceLive(device);
     const key = `${device.platform}:${device.id}`;
     if (!this.booted.has(key))
       throw Error(
@@ -700,45 +754,46 @@ export class DeviceRuntime {
         this.scope(signal),
         30_000,
       );
-    else if (this.adb)
-      await deviceRun(
-        [this.adb, "-s", device.id, "emu", "kill"],
-        this.env,
-        this.scope(signal),
-        10_000,
-      );
     const child = this.emulators.get(device.id);
     if (child) {
       try {
-        child.kill();
-      } catch {}
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        try { child.kill("SIGKILL"); } catch {}
+      }
       await child.exited;
       this.emulators.delete(device.id);
     }
     this.booted.delete(key);
   }
-  async dispose() {
-    if (this.stopped) return;
+  dispose() {
+    return (this.disposing ??= this.disposeOwned());
+  }
+  private async disposeOwned() {
     this.stopped = true;
     this.stopController.abort();
-    await Promise.allSettled([this.installing, this.starting]);
+    // Start every owned cleanup before waiting on any slow session or device.
+    const agents = [...this.agents].map((agent) => agent.close());
     const hub = this.hub;
     this.hub = undefined;
     this.hubOrigin = undefined;
     this.hubToken = undefined;
-    if (hub) {
+    const stopHub = (async () => {
+      if (!hub) return;
       try {
-        hub.kill("SIGTERM");
+        process.kill(-hub.pid, "SIGTERM");
       } catch {}
       await Promise.race([hub.exited, delay(1500)]);
-      if (hub.exitCode === null)
-        try {
-          hub.kill("SIGKILL");
-        } catch {}
+      // The group also owns streaming helpers that can outlive the hub leader.
+      try {
+        process.kill(-hub.pid, "SIGKILL");
+      } catch {
+        if (hub.exitCode === null) try { hub.kill("SIGKILL"); } catch {}
+      }
       await hub.exited;
-    }
+    })();
     // Only devices booted by this runtime are retired. Pre-existing devices are left alone.
-    for (const device of this.booted.values())
+    const devices = [...this.booted.values()].map(async (device) => {
       try {
         if (device.platform === "ios")
           await deviceRun(
@@ -747,15 +802,9 @@ export class DeviceRuntime {
             undefined,
             10_000,
           );
-        else if (this.adb)
-          await deviceRun(
-            [this.adb, "-s", device.id, "emu", "kill"],
-            this.env,
-            undefined,
-            5000,
-          );
       } catch {}
-    for (const child of this.emulators.values()) {
+    });
+    const emulators = [...this.emulators.values()].map(async (child) => {
       if (child.exitCode === null)
         try {
           process.kill(-child.pid, "SIGKILL");
@@ -765,7 +814,15 @@ export class DeviceRuntime {
           } catch {}
         }
       await child.exited;
-    }
+    });
+    await Promise.allSettled([
+      ...agents,
+      ...devices,
+      ...emulators,
+      stopHub,
+      this.installing,
+      this.starting,
+    ]);
     this.emulators.clear();
     this.booted.clear();
   }
@@ -788,6 +845,8 @@ export class DeviceAgent {
     readonly directory: string,
     device: DeviceInfo,
     env: Env,
+    private onClosed?: () => void,
+    private assertTargetLive?: () => void,
   ) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const script = join(directory, "worker.mjs");
@@ -823,7 +882,8 @@ export class DeviceAgent {
         ],
         env,
         undefined,
-        8000,
+        // The pinned CLI allows 10s graceful exit, 2s force-kill, and 1s registration cleanup.
+        15_000,
       );
     };
     let readyResolve: () => void, readyReject: (e: Error) => void;
@@ -897,6 +957,7 @@ export class DeviceAgent {
     signal?: AbortSignal,
   ): Promise<any> {
     signal?.throwIfAborted();
+    this.assertTargetLive?.();
     if (this.closing) throw Error("Device session is closed.");
     await new Promise<void>((resolve, reject) => {
       const abort = () =>
@@ -914,6 +975,8 @@ export class DeviceAgent {
       );
     });
     signal?.throwIfAborted();
+    this.assertTargetLive?.();
+    if (this.closing) throw Error("Device session is closed.");
     const id = ++this.next;
     return new Promise((resolve, reject) => {
       const abort = () => {
@@ -946,13 +1009,14 @@ export class DeviceAgent {
         try {
           this.child.kill("SIGKILL");
         } catch {}
-      }, 12_000);
+      }, 3000);
       try {
         await this.child.exited;
         await this.retireDaemon();
         rmSync(this.directory, { recursive: true, force: true });
       } finally {
         clearTimeout(timer);
+        this.onClosed?.();
       }
     })());
   }

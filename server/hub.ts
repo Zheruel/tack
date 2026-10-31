@@ -1328,7 +1328,7 @@ export class Hub {
     if (!live) {
       // Messages queued before a restart wait, held, until the user resumes or sends.
       const saved = this.store.queue(threadId);
-      live = { status: "idle", queue: saved, held: this.store.queueHeld(threadId) ?? saved.some((q) => !q.agents),
+      live = { status: "idle", queue: saved, held: !!this.store.queueHeld(threadId) || saved.some((q) => !q.agents),
         stopped: this.store.stopped(threadId), streaming: new Map(), deltas: new Map(), lastActive: Date.now() };
       this.live.set(threadId, live);
     }

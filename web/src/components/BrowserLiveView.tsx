@@ -26,6 +26,7 @@ export function BrowserLiveView({ threadId, tabId, image, viewport, title, ready
   const composing = useRef(false);
   const moving = useRef(false);
   const live = useRef(false);
+  const click = useRef<{ at: number; x: number; y: number; button: number; count: number } | undefined>(undefined);
 
   const send = (input: BrowserInput) => {
     if (!ready) return;
@@ -42,6 +43,7 @@ export function BrowserLiveView({ threadId, tabId, image, viewport, title, ready
 
   useEffect(() => {
     live.current = false;
+    click.current = undefined;
     return onEvent((event) => {
       if (event.type !== "browser.frame" || event.threadId !== threadId || event.frame.tabId !== tabId || !picture.current) return;
       live.current = true;
@@ -98,11 +100,15 @@ export function BrowserLiveView({ threadId, tabId, image, viewport, title, ready
         e.preventDefault();
         keyboard.current?.focus({ preventScroll: true });
         e.currentTarget.setPointerCapture(e.pointerId);
-        send({ type: "mouse", action: "down", ...point(e.clientX, e.clientY), button: button(e.button), buttons: e.buttons, clickCount: e.detail > 1 ? 2 : 1, modifiers: modifiers(e) });
+        const prior = click.current;
+        const at = performance.now();
+        const count = prior?.button === e.button && prior.count === 1 && at - prior.at < 500 && Math.hypot(e.clientX - prior.x, e.clientY - prior.y) < 5 ? 2 : 1;
+        click.current = { at, x: e.clientX, y: e.clientY, button: e.button, count };
+        send({ type: "mouse", action: "down", ...point(e.clientX, e.clientY), button: button(e.button), buttons: e.buttons, clickCount: count, modifiers: modifiers(e) });
       }}
       onPointerMove={(e) => { if (e.buttons || e.currentTarget.contains(document.activeElement)) send({ type: "mouse", action: "move", ...point(e.clientX, e.clientY), button: "none", buttons: e.buttons & 7, modifiers: modifiers(e) }); }}
       onPointerUp={(e) => {
-        send({ type: "mouse", action: "up", ...point(e.clientX, e.clientY), button: button(e.button), buttons: e.buttons, clickCount: e.detail > 1 ? 2 : 1, modifiers: modifiers(e) });
+        send({ type: "mouse", action: "up", ...point(e.clientX, e.clientY), button: button(e.button), buttons: e.buttons, clickCount: click.current?.button === e.button ? click.current.count : 1, modifiers: modifiers(e) });
         if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
       }}
       onPointerCancel={() => send({ type: "release" })}
