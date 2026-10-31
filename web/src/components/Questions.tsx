@@ -27,6 +27,7 @@ function Card({ threadId, questions, via }: { threadId: string; questions: Quest
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
   const [typed, setTyped] = useState<string[]>(() => questions.map(() => ""));
   const other = useRef<HTMLInputElement>(null);
+  const card = useRef<HTMLDivElement>(null);
   const submitting = useRef(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
@@ -67,10 +68,15 @@ function Card({ threadId, questions, via }: { threadId: string; questions: Quest
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (sending || e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (sending || e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const composer = card.current?.closest(".thread-composer");
+      const inComposer = !!composer && target instanceof HTMLTextAreaElement && target.closest(".composer-card")?.closest(".thread-composer") === composer && !target.value.trim() && target.getClientRects().length > 0;
+      if (!card.current?.contains(target) && !inComposer) return;
       const inOther = e.target === other.current;
-      const typing = !inOther && e.target instanceof HTMLTextAreaElement && e.target.value.trim() !== "";
-      if (typing) return;
+      if (!inOther && (target instanceof HTMLInputElement || target.isContentEditable)) return;
+      if (e.key === "Enter" && target.closest("button")) return;
       const n = Number(e.key);
       if (!inOther && n >= 1 && n <= q.options.length) pick(q.options[n - 1]!.label);
       else if (e.key === "Enter" && answerOf(index)) next();
@@ -84,7 +90,7 @@ function Card({ threadId, questions, via }: { threadId: string; questions: Quest
   });
 
   return (
-    <div className="dock-in mb-2 rounded-2xl border border-brass/25 bg-raised px-4 pt-3 pb-3">
+    <div ref={card} data-question-card className="dock-in mb-2 rounded-2xl border border-brass/25 bg-raised px-4 pt-3 pb-3">
       {via && <p className="mb-1 truncate text-[12px] text-brass">{via} needs an answer</p>}
       <div className="mb-1 flex h-5 items-center gap-1.5 text-[12px] text-faint">
         {questions.length > 1

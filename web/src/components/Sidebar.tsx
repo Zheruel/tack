@@ -20,7 +20,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Project, Thread } from "../../../shared/protocol";
 import { pickFolder } from "../native";
 import { call } from "../rpc";
-import { loadPrs, openThread, setShowSettled, setSidebar, startDraft, useApp } from "../store";
+import { isThreadDescendant, loadPrs, openThread, setShowSettled, setSidebar, startDraft, useApp } from "../store";
 import { MenuContent, MenuItem } from "./Composer";
 import { ProviderLogo } from "./Logos";
 import { ProjectIcon } from "./ProjectIcon";
@@ -137,12 +137,31 @@ export function Sidebar() {
   const filtered = filter && projects.some((p) => p.id === filter) ? filter : null;
 
   // Sub-agents live inside their parent's thread; what they need shows on the parent.
-  const owner = (id: string) => threads[id]?.parentId ?? id;
-  const waiting = new Set(Object.values(approvals).map((a) => owner(a.threadId)));
+  const owner = (id: string) => {
+    const seen = new Set<string>();
+    let thread = threads[id];
+    const projectId = thread?.projectId;
+    while (thread?.parentId) {
+      if (seen.has(thread.id) || thread.projectId !== projectId) return;
+      seen.add(thread.id);
+      thread = threads[thread.parentId];
+    }
+    return thread && isThreadDescendant(threads, id, thread.id) ? thread.id : undefined;
+  };
+  const waiting = new Set<string>();
+  const asking = new Set<string>();
+  for (const a of Object.values(approvals)) {
+    const id = owner(a.threadId);
+    if (id) waiting.add(id);
+  }
   const agentsWorking = new Set<string>();
   for (const t of Object.values(threads)) {
-    if (t.questions?.length) waiting.add(t.id);
-    if (t.parentId && t.status === "running") agentsWorking.add(t.parentId);
+    const id = owner(t.id);
+    if (!id) continue;
+    if (t.questions?.length) { waiting.add(id); asking.add(id); }
+    const status = t.agent?.status ?? t.status;
+    if (t.parentId && status === "waiting") waiting.add(id);
+    if (t.parentId && ["running", "waiting", "cancelling"].includes(status)) agentsWorking.add(id);
   }
   const top = Object.values(threads)
     .filter((t) => !t.parentId && (!filtered || t.projectId === filtered))
@@ -195,7 +214,7 @@ export function Sidebar() {
     else localStorage.removeItem(FILTER_KEY);
   };
 
-  const rowProps = { now, waiting, agentsWorking, unread, activeId, projects };
+  const rowProps = { now, waiting, asking, agentsWorking, unread, activeId, projects };
 
   return (
     <aside
@@ -421,6 +440,7 @@ function Settled({ threads, rowProps }: { threads: Thread[]; rowProps: RowShared
 interface RowShared {
   now: number;
   waiting: Set<string>;
+  asking: Set<string>;
   agentsWorking: Set<string>;
   unread: Record<string, true>;
   activeId?: string;
@@ -431,12 +451,11 @@ type Tone = "brass" | "danger" | "ok";
 const TONE: Record<Tone, string> = { brass: "text-brass", danger: "text-danger", ok: "text-ok" };
 
 // What the thread needs from you, shown top right where the time otherwise sits.
-function statusOf(t: Thread, { waiting, agentsWorking, unread }: RowShared, approval: boolean) {
-  const asking = !!t.questions?.length;
+function statusOf(t: Thread, { waiting, asking, agentsWorking, unread }: RowShared, approval: boolean) {
   if (waiting.has(t.id))
-    return asking && !approval
-      ? { label: "Question", icon: MessageCircleQuestion, tone: "brass" as Tone }
-      : { label: "Approval", icon: ShieldQuestion, tone: "brass" as Tone };
+    return approval
+      ? { label: "Approval", icon: ShieldQuestion, tone: "brass" as Tone }
+      : { label: asking.has(t.id) ? "Question" : "Needs you", icon: MessageCircleQuestion, tone: "brass" as Tone };
   if (t.status === "error") return { label: "Failed", icon: CircleAlert, tone: "danger" as Tone };
   if (t.status === "running" || agentsWorking.has(t.id))
     return { label: t.status === "running" ? "Working" : "Agents", icon: CircleDashed, tone: "brass" as Tone, spin: true };
@@ -448,7 +467,7 @@ function ThreadRow({ thread, ...shared }: { thread: Thread } & RowShared) {
   const active = shared.activeId === thread.id;
   const project = shared.projects.find((p) => p.id === thread.projectId);
   const approval = useApp((s) =>
-    Object.values(s.approvals).some((a) => a.threadId === thread.id || s.threads[a.threadId]?.parentId === thread.id),
+    Object.values(s.approvals).some((a) => isThreadDescendant(s.threads, a.threadId, thread.id)),
   );
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);

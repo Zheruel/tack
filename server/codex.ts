@@ -162,6 +162,7 @@ export class CodexSession implements AgentSession {
   private rpc: Rpc;
   private init: Promise<void>;
   private thread?: Promise<string>;
+  private fallbackPending?: string;
   private turnId?: string;
   private turnStart = 0;
   private interrupted = false;
@@ -291,25 +292,36 @@ export class CodexSession implements AgentSession {
   }
 
   private startThread(): Promise<string> {
+    if (this.thread) return this.thread;
     const { approvalPolicy, sandbox } = this.policy();
     const base = { cwd: this.opts.cwd, model: this.model, approvalPolicy, sandbox, baseInstructions: systemPrompt("codex", this.opts.role) };
-    return (this.thread ??= (async () => {
+    const opening = (async () => {
       await this.init;
       let result: Json;
       if (this.opts.resume) {
-        result = await this.rpc
-          .request("thread/resume", { threadId: this.opts.resume, excludeTurns: true, ...base })
-          .catch(() => undefined);
+        try {
+          result = await this.rpc.request("thread/resume", { threadId: this.opts.resume, excludeTurns: true, ...base });
+        } catch (error) {
+          if (!this.opts.fallbackContext?.trim()) {
+            throw new Error(`Could not resume the Codex session; no saved context is available for a safe replacement. ${error instanceof Error ? error.message : String(error)}`);
+          }
+          this.fallbackPending = this.opts.fallbackContext;
+        }
       }
       // Dynamic tools are stored with the thread, so only a new thread declares them.
       result ??= await this.rpc.request("thread/start", { ...base, dynamicTools: dynamicTools(this.opts) });
       this.events.sessionId(result.thread.id);
       return result.thread.id as string;
-    })());
+    })();
+    this.thread = opening;
+    // A failed native open is retryable; concurrent callers still share this attempt.
+    void opening.catch(() => { if (this.thread === opening) this.thread = undefined; });
+    return opening;
   }
 
   private async run(text: string, attachments: Attachment[]) {
     const threadId = await this.startThread();
+    const fallback = this.fallbackPending;
     const input: Json[] = [];
     // "/skill rest" invokes a skill: Codex wants the skill item plus "$skill" in the text.
     const skill = text.match(/^\/([\w:.-]+)(\s|$)/);
@@ -324,6 +336,7 @@ export class CodexSession implements AgentSession {
     for (const a of attachments) {
       if (a.kind === "image") input.push({ type: "image", url: `data:${a.mediaType};base64,${a.data}` });
     }
+    if (fallback) text = fallback + text;
     input.unshift({ type: "text", text, text_elements: [] });
     const { approvalPolicy, sandboxPolicy } = this.policy();
     const disabledPluginIds = await this.pluginsToDisable();
@@ -343,6 +356,7 @@ export class CodexSession implements AgentSession {
       disabledPluginIds,
       ...(sandboxPolicy ? { sandboxPolicy } : {}),
     });
+    if (this.fallbackPending === fallback) this.fallbackPending = undefined;
   }
 
   private notification(method: string, p: Json) {

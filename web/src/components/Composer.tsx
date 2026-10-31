@@ -1,7 +1,7 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
 import { ArrowUp, Check, CornerUpRight, Folder, GitBranch, GitFork, ListPlus, Paperclip, Search, ShieldCheck, ShieldOff, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { DEFAULT_EFFORT, type Access, type Attachment, type Effort, type Provider } from "../../../shared/protocol";
 import { onFileDrop } from "../native";
 import { call } from "../rpc";
@@ -12,8 +12,34 @@ import { PROVIDER_NAMES } from "./Logos";
 import { ModelPicker } from "./ModelPicker";
 import { Questions } from "./Questions";
 
-// Unsent text survives switching threads. Drafts (new threads) share one slot.
-const drafts = new Map<string, string>();
+// Keep unsent content and pending sends with their chat, including while it is unmounted.
+interface ComposerDraft {
+  text: string;
+  attachments: Attachment[];
+  sending?: boolean;
+  error?: string;
+  editing?: { id: string; attachments: Attachment[]; draft: { text: string; attachments: Attachment[] } };
+}
+const drafts = new Map<string, ComposerDraft>();
+const emptyDraft: ComposerDraft = { text: "", attachments: [] };
+const draftListeners = new Set<() => void>();
+const subscribeDrafts = (listener: () => void) => {
+  draftListeners.add(listener);
+  return () => { draftListeners.delete(listener); };
+};
+const draftFor = (key: string) => drafts.get(key) ?? emptyDraft;
+function changeDraft(key: string, update: (draft: ComposerDraft) => ComposerDraft) {
+  drafts.set(key, update(draftFor(key)));
+  for (const listener of draftListeners) listener();
+}
+function restoreDraft(d: ComposerDraft): ComposerDraft {
+  if (!d.editing) return d;
+  return {
+    ...d, ...d.editing.draft,
+    attachments: [...d.editing.draft.attachments, ...d.attachments.filter((a) => !d.editing!.attachments.includes(a))],
+    editing: undefined, sending: false, error: undefined,
+  };
+}
 const DRAFT = "__draft__";
 
 interface Config {
@@ -29,14 +55,13 @@ export function Composer({ threadId }: { threadId?: string }) {
   const composerRequest = useApp((s) => s.composerRequest);
   const config: Config | undefined = thread ?? draft;
   const key = threadId ?? DRAFT;
-  const [text, setText] = useState(() => drafts.get(key) ?? "");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [sending, setSending] = useState(false);
+  const cached = useSyncExternalStore(subscribeDrafts, () => draftFor(key));
+  const { text, attachments, sending, editing, error } = cached;
+  const setText = (value: SetStateAction<string>) => changeDraft(key, (d) => ({ ...d, text: typeof value === "function" ? value(d.text) : value }));
+  const setAttachments = (value: SetStateAction<Attachment[]>) => changeDraft(key, (d) => ({ ...d, attachments: typeof value === "function" ? value(d.attachments) : value }));
   const input = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const running = thread?.status === "running";
-  // A queued message being rewritten in the composer; the draft it displaced comes back afterwards.
-  const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
   const [caret, setCaret] = useState(0);
   const provider: Provider = useApp((s) => s.models.find((m) => m.value === config?.model)?.provider ?? thread?.provider ?? "claude");
   const projectId = thread?.projectId ?? draft?.projectId;
@@ -60,14 +85,10 @@ export function Composer({ threadId }: { threadId?: string }) {
   }, []);
 
   useEffect(() => {
-    setEditing(null);
-    setText(drafts.get(key) ?? "");
-    setAttachments([]);
     input.current?.focus();
   }, [key]);
 
   useEffect(() => {
-    drafts.set(key, text);
     const el = input.current;
     if (!el) return;
     el.style.height = "auto";
@@ -98,11 +119,12 @@ export function Composer({ threadId }: { threadId?: string }) {
 
   useEffect(() => {
     let off = () => {};
-    onFileDrop((paths) =>
-      setAttachments((a) => [...a, ...paths.map((path) => ({ kind: "path" as const, name: path.split("/").pop()!, path }))]),
-    ).then((fn) => (off = fn));
-    return () => off();
-  }, []);
+    let cancelled = false;
+    onFileDrop((paths) => {
+      if (!cancelled) setAttachments((a) => [...a, ...paths.map((path) => ({ kind: "path" as const, name: path.split("/").pop()!, path }))]);
+    }).then((fn) => cancelled ? fn() : (off = fn));
+    return () => { cancelled = true; off(); };
+  }, [key]);
 
   if (!config) return null;
 
@@ -113,33 +135,53 @@ export function Composer({ threadId }: { threadId?: string }) {
   const edit = (id: string) => {
     const q = useApp.getState().queues[threadId!]?.find((m) => m.id === id);
     if (!q || q.agents) return;
-    setEditing((e) => e ?? { id, draft: text });
-    setText(q.text);
+    if (draftFor(key).sending) return;
+    changeDraft(key, (d) => {
+      const unsent = restoreDraft(d);
+      return {
+        ...d,
+        editing: { id, attachments: q.attachments, draft: { text: unsent.text, attachments: unsent.attachments } },
+        text: q.text,
+        attachments: q.attachments,
+        error: undefined,
+      };
+    });
     requestAnimationFrame(() => input.current?.focus());
   };
   const stopEditing = () => {
-    if (!editing) return;
-    setText(editing.draft);
-    setEditing(null);
+    changeDraft(key, (d) => d.sending ? d : restoreDraft(d));
   };
 
   const send = async (queue = false) => {
-    const body = text.trim();
-    if (editing && threadId) {
-      if (!body) return;
-      await call("chat.edit", { threadId, queuedId: editing.id, text: body });
-      return stopEditing();
-    }
-    if ((!body && !attachments.length) || sending) return;
-    setText("");
-    setAttachments([]);
-    drafts.delete(key);
-    if (threadId) return call("chat.send", { threadId, text: body, attachments, steer: !queue });
-    setSending(true);
+    const submitted = draftFor(key);
+    const body = submitted.text.trim();
+    if (submitted.sending || (!body && (!submitted.attachments.length || submitted.editing))) return;
+    changeDraft(key, (d) => ({ ...d, sending: true, error: undefined }));
     try {
-      await sendDraft(body, attachments);
-    } finally {
-      setSending(false);
+      if (submitted.editing && threadId) {
+        await call("chat.edit", { threadId, queuedId: submitted.editing.id, text: body });
+        changeDraft(key, (d) => d.text === submitted.text
+          ? restoreDraft(d)
+          : { ...d, sending: false });
+      } else {
+        let createdId: string | undefined;
+        if (threadId) await call("chat.send", { threadId, text: body, attachments: submitted.attachments, steer: !queue });
+        else createdId = await sendDraft(body, submitted.attachments);
+        changeDraft(key, (d) => ({
+          ...d,
+          text: d.text === submitted.text ? "" : d.text,
+          attachments: d.attachments.filter((a) => !submitted.attachments.includes(a)),
+          sending: false,
+        }));
+        // Text or images added while the first send was pending follow into the new chat.
+        const remaining = draftFor(key);
+        if (createdId && useApp.getState().activeThreadId === createdId && (remaining.text || remaining.attachments.length)) {
+          changeDraft(createdId, (d) => ({ ...d, text: [remaining.text, d.text].filter(Boolean).join("\n\n"), attachments: [...remaining.attachments, ...d.attachments] }));
+          changeDraft(key, () => emptyDraft);
+        }
+      }
+    } catch (e) {
+      changeDraft(key, (d) => ({ ...d, sending: false, error: e instanceof Error ? e.message : String(e) }));
     }
   };
 
@@ -207,6 +249,7 @@ export function Composer({ threadId }: { threadId?: string }) {
       {threadId && <Approval threadId={threadId} />}
       {threadId && <Queue threadId={threadId} editing={editing?.id} onEdit={edit} />}
       {editing && <div className="px-1 pb-1.5 text-[12px] text-faint">Editing a queued message. ↵ saves, Esc cancels.</div>}
+      {error && <p role="alert" className="px-1 pb-2 text-[12px] text-danger">{error}</p>}
       <div className="relative">
         {completion && <CompletionMenu completion={completion} onPick={pick} onHover={setIndex} />}
         <div
@@ -232,8 +275,9 @@ export function Composer({ threadId }: { threadId?: string }) {
                     </span>
                   )}
                   <button
+                    disabled={editing?.attachments.includes(a)}
                     onClick={() => setAttachments((all) => all.filter((_, j) => j !== i))}
-                    title="Remove"
+                    title={editing?.attachments.includes(a) ? "Queued images cannot be edited" : "Remove"}
                     className={`absolute flex size-5 items-center justify-center rounded-full text-dim hover:text-ink ${
                       a.kind === "image" ? "-top-1.5 -right-1.5 bg-raised opacity-0 shadow group-hover:opacity-100" : "top-1 right-1"
                     }`}
@@ -280,7 +324,7 @@ export function Composer({ threadId }: { threadId?: string }) {
           <div className="composer-controls flex items-center gap-1 px-2 pb-2">
             <button
               onClick={() => fileInput.current?.click()}
-              title="Attach images"
+              title={editing ? "Attach images to your next message" : "Attach images"}
               aria-label="Attach images"
               className="flex size-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-hover hover:text-ink"
             >

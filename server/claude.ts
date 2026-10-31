@@ -100,6 +100,7 @@ export class ClaudeSession implements AgentSession {
   private messageId = "";
   private turnStart = 0;
   private turnStarted = false;
+  private turnPending = false;
   private interrupted = false;
   private prompt = 0; // tokens sent in the latest request, cache included
   private context = 0; // ...plus what the model wrote back
@@ -148,14 +149,18 @@ export class ClaudeSession implements AgentSession {
   }
 
   send(text: string, attachments: Attachment[]) {
+    if (this.closed) throw new Error("Claude session is closed.");
     this.turnStart = Date.now();
     this.turnStarted = false;
+    this.turnPending = true;
+    this.interrupted = false;
     this.push(text, attachments);
   }
 
   // A message pushed while a turn runs is folded into it at the next tool boundary; one that
   // lands after the last tool call starts a follow-up turn (the result says so).
   async steer(text: string, attachments: Attachment[]): Promise<Steered> {
+    if (this.closed || !this.turnPending || this.interrupted) return "queue";
     this.push(text, attachments);
     return "sent";
   }
@@ -170,6 +175,7 @@ export class ClaudeSession implements AgentSession {
   }
 
   async interrupt() {
+    if (this.closed || !this.turnPending) return;
     this.interrupted = true;
     await this.q.interrupt().catch(() => {});
   }
@@ -254,6 +260,7 @@ export class ClaudeSession implements AgentSession {
       }
       case "result": {
         this.turnStarted = false;
+        this.turnPending = ((msg as any).queued_turn_count ?? 0) > 0;
         this.flushOpen();
         const error = this.interrupted
           ? "Interrupted"
@@ -379,6 +386,7 @@ export class ClaudeSession implements AgentSession {
   private started() {
     if (this.turnStarted) return;
     this.turnStarted = true;
+    this.turnPending = true;
     this.events.turnStart?.();
   }
 
@@ -389,7 +397,9 @@ export class ClaudeSession implements AgentSession {
       const tool = this.tools.get(b.tool_use_id);
       if (!tool) continue;
       tool.status = b.is_error ? "error" : "ok";
-      tool.output = resultText(b.content).slice(0, MAX_OUTPUT);
+      const output = resultText(b.content);
+      // Agent responses are structured JSON: cutting them loses identity/status and breaks their UI.
+      tool.output = /^(?:mcp__tack__)?agent(?:_status|_send|_cancel)?$/.test(tool.name) ? agentDisplayOutput(output) : output.slice(0, MAX_OUTPUT);
       this.tools.delete(tool.id);
       this.events.item(tool, true);
     }
@@ -398,6 +408,28 @@ export class ClaudeSession implements AgentSession {
 
 // Tool output kept for display only; the model already has the full result.
 const MAX_OUTPUT = 20_000;
+
+function agentDisplayOutput(output: string): string {
+  if (output.length <= MAX_OUTPUT) return output;
+  try {
+    const result = JSON.parse(output);
+    if (!result || typeof result !== "object" || Array.isArray(result)) return output.slice(0, MAX_OUTPUT);
+    const display = { ...result, outputTruncated: true };
+    if (typeof display.result === "string" && display.result.length > MAX_OUTPUT / 2) {
+      display.result = display.result.slice(0, MAX_OUTPUT / 2) + "\n[Result shortened for display; open the child thread for the full result.]";
+    }
+    const encoded = JSON.stringify(display);
+    if (encoded.length <= MAX_OUTPUT) return encoded;
+    // Unusually large questions or heavily escaped text can fill the budget too. Keep a valid card identity.
+    const short = (value: unknown, limit: number) => typeof value === "string" ? value.slice(0, limit) : undefined;
+    return JSON.stringify({ id: short(result.id, 512), threadId: short(result.threadId, 512), generation: result.generation,
+      name: short(result.name, 256), model: short(result.model, 256), status: short(result.status, 64), started: result.started,
+      hasPendingQuestion: result.hasPendingQuestion, error: short(result.error, 1000), outputTruncated: true,
+      result: "Result shortened for display; open the child thread for the full result." });
+  } catch {
+    return output.slice(0, MAX_OUTPUT);
+  }
+}
 
 const LIMIT_LABELS: Record<string, string> = {
   five_hour: "5-hour limit",

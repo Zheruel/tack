@@ -92,10 +92,17 @@ export interface PathAttachment {
 
 export type Attachment = ImageAttachment | PathAttachment;
 
+// Paths keep attachments available when another provider takes over the conversation.
+export interface TranscriptAttachment {
+  name: string;
+  image: boolean;
+  path?: string;
+}
+
 // Provider-neutral transcript items. The UI never branches on provider.
 export type Item =
   // `agents`: not typed by the user but sub-agents' reports, delivered by Tack.
-  | { id: string; kind: "user"; text: string; attachments?: { name: string; image: boolean }[]; agents?: boolean; ts: number }
+  | { id: string; kind: "user"; text: string; attachments?: TranscriptAttachment[]; agents?: boolean; ts: number }
   | { id: string; kind: "assistant"; text: string; ts: number }
   | { id: string; kind: "thinking"; text: string; ts: number }
   | {
@@ -150,6 +157,7 @@ export interface Queued {
   tasks?: string[]; // for reports: the sub-agents they cover
   reportTo?: string; // for a message to a sub-agent: the parent that wants its report when this turn ends
   taskGeneration?: number; // continuation of a child task, including an answer to its question
+  answerToQuestions?: string; // question snapshot when submitted; don't dismiss a newer question
   agentQuestion?: { childId: string; generation: number };
 }
 
@@ -228,7 +236,7 @@ export interface Requests {
   "visual.get": { params: { threadId: string; id: string }; result: string };
   "state.get": {
     params: {};
-    result: { projects: Project[]; threads: Thread[]; models: ModelOption[]; clis: CliStatus[]; limits: Partial<Record<Provider, Limit[]>> };
+    result: { projects: Project[]; threads: Thread[]; models: ModelOption[]; clis: CliStatus[]; limits: Partial<Record<Provider, Limit[]>>; approvals: ApprovalRequest[] };
   };
   "project.add": { params: { path: string }; result: Project };
   "project.remove": { params: { projectId: string }; result: null };

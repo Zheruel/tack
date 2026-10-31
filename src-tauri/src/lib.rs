@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent};
 
 #[derive(Clone, Serialize, serde::Deserialize)]
@@ -93,6 +93,25 @@ fn start_sidecar(app: &tauri::AppHandle, sidecar: Arc<Sidecar>) {
     });
 }
 
+fn stop_sidecar(mut child: Child, grace: Duration) {
+    // EOF lets Bun flush durable state, abort worktree preparation, and close its agents.
+    drop(child.stdin.take());
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(_) => break,
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 // macOS pins a Writing Tools button beside the caret in any WKWebView text field. Chromium apps
 // never show it. Writing Tools stays in the context menu.
 #[cfg(target_os = "macos")]
@@ -132,8 +151,10 @@ pub fn run() {
 
     app.run(move |_, event| {
         if let RunEvent::Exit = event {
-            if let Some(mut child) = sidecar.child.lock().unwrap().take() {
-                let _ = child.kill();
+            // Closing the last macOS window is not quitting the app; stop only on Exit.
+            let child = sidecar.child.lock().unwrap().take();
+            if let Some(child) = child {
+                stop_sidecar(child, Duration::from_secs(6));
             }
         }
     });

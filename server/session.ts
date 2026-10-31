@@ -39,6 +39,8 @@ export interface SessionOptions {
   effort: Effort;
   access: Access;
   resume?: string;
+  // Full transcript context to replay only if the native Codex session cannot be resumed.
+  fallbackContext?: string;
   bin?: string;
   env: Record<string, string>;
   // Skills the agent may see; omitted means all of them.

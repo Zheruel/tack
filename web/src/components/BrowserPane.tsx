@@ -1,13 +1,28 @@
 import { ArrowRight, Globe2, Loader2, Maximize2, Minimize2, PenLine, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { BrowserPreview, Requests } from "../../../shared/protocol";
+import type { Attachment, BrowserPreview, Requests } from "../../../shared/protocol";
 import { call, onConnect } from "../rpc";
-import { attachBrowserImage, suggestReply, useApp } from "../store";
+import { attachBrowserImage, openThread, suggestReply, useApp } from "../store";
 import { BrowserAnnotation } from "./BrowserAnnotation";
 import { BrowserLiveView } from "./BrowserLiveView";
 
 const EMPTY: BrowserPreview = { tabs: [] };
 type Command = Requests["browser.command"]["params"];
+
+async function attachAnnotation(threadId: string, image: Attachment, url: string): Promise<void> {
+  const threads = useApp.getState().threads;
+  let target = threads[threadId];
+  const seen = new Set<string>();
+  while (target?.parentId) {
+    if (seen.has(target.id)) throw new Error("This agent's parent conversation could not be found.");
+    seen.add(target.id);
+    target = threads[target.parentId];
+  }
+  if (!target) throw new Error("This agent's parent conversation could not be found.");
+  // Keep the image queued while navigation mounts the root thread's composer.
+  attachBrowserImage(target.id, image, url);
+  if (target.id !== threadId) await openThread(target.id);
+}
 
 export function BrowserPane({ threadId }: { threadId: string }) {
   const preview = useApp((s) => s.browsers[threadId]) ?? EMPTY;
@@ -207,10 +222,11 @@ export function BrowserPane({ threadId }: { threadId: string }) {
         {preview.needsInstall ? (
           <div className="browser-empty"><GlobeMark /><h2>Set up your browser</h2><p>Download the browser to preview your app<br />and browse alongside your agent.</p><button className="browser-primary" disabled={busy} onClick={install}>{busy ? <Loader2 size={14} className="browser-spin" /> : <Globe2 size={14} />}{busy ? "Setting up…" : "Download browser"}</button></div>
         ) : annotation ? (
-          <BrowserAnnotation image={annotation.image} title={annotation.title} onCancel={() => setAnnotation(undefined)} onAttach={(image) => {
-            attachBrowserImage(threadId, image, annotation.url);
-            setAnnotation(undefined);
-            setExpanded(false);
+          <BrowserAnnotation image={annotation.image} title={annotation.title} onCancel={() => setAnnotation(undefined)} onAttach={async (image) => {
+            try {
+              await attachAnnotation(threadId, image, annotation.url);
+              if (mounted.current) { setAnnotation(undefined); setExpanded(false); }
+            } catch (error) { if (mounted.current) setError(error instanceof Error ? error.message : String(error)); }
           }} />
         ) : tab ? (
           <BrowserLiveView key={current.tabId} threadId={threadId} tabId={current.tabId} image={preview.image} viewport={preview.viewport} title={current.title || current.url} ready={watching}

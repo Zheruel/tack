@@ -163,7 +163,18 @@ export class Hub {
           startedAt: child.createdAt, startMessageId: items.find((i) => i.kind === "user")?.id });
       }
     }
-    for (const task of this.taskHistory.values()) {
+    // Settle descendants first: a suppressed child report must not strand its idle parent.
+    const depth = (id: string) => {
+      const seen = new Set<string>();
+      let thread = this.store.thread(id);
+      while (thread?.parentId && !seen.has(thread.id)) {
+        seen.add(thread.id);
+        thread = this.store.thread(thread.parentId);
+      }
+      return seen.size;
+    };
+    const recovered = [...this.taskHistory.values()].sort((a, b) => depth(b.id) - depth(a.id));
+    for (const task of recovered) {
       if (task.delivery === "delivered" || task.delivery === "queued") {
         task.delivery = this.store.stopped(task.parentId) ? "disposed" : "pending";
       }
@@ -314,8 +325,24 @@ export class Hub {
       queue: this.state(threadId).queue,
       held: !!this.state(threadId).held,
       streaming: live ? [...live.streaming.values()] : [],
-      approvals: [...this.approvals.values()].filter((a) => a.request.threadId === threadId).map((a) => a.request),
+      approvals: this.pendingApprovals().filter((a) => this.descendants(threadId).has(a.threadId)),
     };
+  }
+
+  pendingApprovals(): ApprovalRequest[] {
+    return [...this.approvals.values()].map((a) => a.request);
+  }
+
+  rootThread(threadId: string): Thread {
+    let thread = this.thread(threadId);
+    const seen = new Set([threadId]);
+    while (thread.parentId && !seen.has(thread.parentId)) {
+      seen.add(thread.parentId);
+      const parent = this.store.thread(thread.parentId);
+      if (!parent || parent.projectId !== thread.projectId) break;
+      thread = this.withStatus(parent);
+    }
+    return thread;
   }
 
   defaultModel(): { provider: Provider; model: string; effort: Effort } {
@@ -375,7 +402,7 @@ export class Hub {
       // Switching provider is handled on the next send, which hands the thread over.
       if (patch.model && provider === live.session.provider) await live.session.setModel(patch.model).catch(() => {});
       // Effort and access are fixed per process; the next send resumes with the new values.
-      if (patch.effort || patch.access) live.stale = true;
+      if (patch.effort || patch.access || (patch.model && patch.model !== before?.model && live.status === "running")) live.stale = true;
     }
     return this.emitThread(threadId);
   }
@@ -393,7 +420,8 @@ export class Hub {
       }
       if (retry) this.scheduleReports(threadId);
     }
-    const queued: Queued = { id: crypto.randomUUID(), text, attachments, ...(agents && { agents }) };
+    const queued: Queued = { id: crypto.randomUUID(), text, attachments,
+      ...(agents ? { agents } : { answerToQuestions: JSON.stringify(this.store.thread(threadId)?.questions ?? []) }) };
     // After Stop, a message goes behind what was queued, and sending releases the queue. A message that
     // steers a turn that is being stopped would reach nobody.
     if (live.held || (live.stopping && live.status === "running")) {
@@ -461,6 +489,7 @@ export class Hub {
     void attempt.then(() => {
       if (live.steering !== attempt) return;
       live.steering = undefined;
+      this.settleIdleParent(threadId);
       this.drain(threadId);
     });
     return attempt;
@@ -471,11 +500,13 @@ export class Hub {
     const live = this.state(threadId);
     const session = live.session;
     if (live.status !== "running" || live.stopped || live.stopping || live.held || !session || session.closed || !session.steer) return "queue";
+    if (live.stale || this.store.thread(threadId)?.provider !== session.provider) return "queue";
     const [text, images] = resolveAttachments(queued.text, queued.attachments);
     const how = await session.steer(expandVisualize(text), images);
     if (how !== "sent") return how;
     if (!this.store.thread(threadId) || live.session !== session) return "sent";
     this.recordUser(threadId, queued);
+    if (this.clearAnsweredQuestion(threadId, queued)) this.emitThread(threadId);
     this.acceptReports(queued.tasks ?? []);
     this.acceptQuestion(queued.agentQuestion);
     if (live.active) live.active.reports.push(...(queued.tasks ?? []));
@@ -492,12 +523,25 @@ export class Hub {
       id: queued.id,
       kind: "user",
       text: queued.text,
-      attachments: queued.attachments.map((a) => ({ name: a.name, image: a.kind === "image" || isImagePath(a.path) })),
+      attachments: queued.attachments.length ? this.store.persistAttachments(threadId, queued.id, queued.attachments) : [],
       ...(queued.agents && { agents: true }),
       ts: Date.now(),
     };
     this.store.appendItem(threadId, user);
     this.broadcast({ type: "item", threadId, item: user });
+  }
+
+  private clearAnsweredQuestion(threadId: string, queued: Queued): boolean {
+    const questions = this.store.thread(threadId)?.questions;
+    if (queued.agents || !questions?.length || (queued.answerToQuestions !== undefined && queued.answerToQuestions !== JSON.stringify(questions))) return false;
+    this.store.setQuestions(threadId, null);
+    const task = this.tasks.get(threadId);
+    if (task && !agentTerminal(task)) {
+      this.dismissQuestion(task);
+      task.status = "running";
+      this.saveTask(task);
+    }
+    return true;
   }
 
   // "Send now" on a queued message.
@@ -670,7 +714,7 @@ export class Hub {
           this.store.updateThread(threadId, { title: titleFrom(queued.text) });
           if (!thread.parentId) this.nameThread(threadId, "initial", { message: queued.text, attachments: queued.attachments });
         }
-        if (thread.questions) this.store.setQuestions(threadId, null);
+        this.clearAnsweredQuestion(threadId, queued);
       }
       this.store.touch(threadId);
       this.emitThread(threadId);
@@ -688,6 +732,7 @@ export class Hub {
         const session: AgentSession = createSession(thread.provider, {
           cwd: task?.workspace?.path ?? project.path, model: thread.model, effort: thread.effort, access: thread.access,
           resume: upgradeTools ? undefined : native.id, bin: this.env.bins[thread.provider], env: this.env.vars, skills,
+          fallbackContext: native.id ? handoff(history, thread.provider)?.text : undefined,
           role: thread.parentId ? "agent" : "main",
           agentModels: models.length ? models : [{ value: thread.model, provider: thread.provider }],
         }, this.sessionEvents(threadId, thread.provider, () => session));
@@ -800,7 +845,7 @@ export class Hub {
   private notePrs(threadId: string, item: Extract<Item, { kind: "tool" }>) {
     const input = JSON.stringify(item.input ?? "");
     if (!/gh pr create|create_pull_request/.test(input + item.name)) return;
-    const root = this.store.thread(threadId)?.parentId ?? threadId;
+    const root = this.rootThread(threadId).id;
     let added = false;
     for (const url of item.output!.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g) ?? []) added = this.store.addPr(root, url) || added;
     if (added) this.emitThread(root);
@@ -1009,8 +1054,9 @@ export class Hub {
 
   private async stopTask(task: Task): Promise<void> {
     const live = this.state(task.id);
+    const children = [...this.tasks.values()].filter((t) => t.parentId === task.id && !agentTerminal(t));
     live.stopped = true;
-    live.stopping = live.status === "running" || !!live.preparing;
+    live.stopping = live.status === "running" || !!live.preparing || children.length > 0;
     live.held = true;
     this.store.setStopped(task.id, true);
     this.store.setQuestions(task.id, null);
@@ -1027,10 +1073,12 @@ export class Hub {
     this.emitThread(task.id);
     this.wakeTaskWaiters(task.id);
     live.preparing?.abort();
-    const children = [...this.tasks.values()].filter((t) => t.parentId === task.id && !agentTerminal(t));
     await Promise.all(children.map((t) => this.stopTask(t)));
-    if (!live.stopping) return;
-    if (!live.session && !live.preparing) {
+    if (!live.stopping) {
+      this.settleIdleParent(task.parentId);
+      return;
+    }
+    if (!live.preparing && (live.status !== "running" || !live.session)) {
       this.finishRun(task.id, "Interrupted");
       return;
     }
@@ -1046,14 +1094,13 @@ export class Hub {
 
   private async sendToAgent(task: Task, input: AgentSendInput): Promise<string> {
     const child = this.state(task.id);
+    if (input.mode === "steer" && child.status !== "running" && !child.steering) return JSON.stringify({ error: "Agent is not running; use auto to restart it." });
     const continuation = task.status === "waiting" && !!this.store.thread(task.id)?.questions?.length;
     const queued: Queued = { id: crypto.randomUUID(), text: input.message, attachments: [], reportTo: task.parentId,
+      answerToQuestions: JSON.stringify(this.store.thread(task.id)?.questions ?? []),
       ...(continuation && { taskGeneration: task.generation }) };
     if (continuation) {
       this.dismissQuestion(task);
-      this.store.setQuestions(task.id, null);
-      task.status = "running";
-      this.saveTask(task);
     }
     child.stopped = false;
     child.held = false;
@@ -1086,6 +1133,13 @@ export class Hub {
     const task = key ? this.taskHistory.get(key) : this.tasks.get(childId);
     if (!task || agentTerminal(task)) return;
     const cancelled = task.status === "cancelling" || !!live.stopped;
+    if (cancelled && this.openChildren(task).length) {
+      task.status = "cancelling";
+      this.saveTask(task);
+      this.emitThread(childId);
+      this.wakeTaskWaiters(childId);
+      return;
+    }
     if (!cancelled && !live.turnError && this.store.thread(childId)?.questions?.length) {
       task.status = "waiting";
       this.saveTask(task);
@@ -1112,6 +1166,16 @@ export class Hub {
     this.emitThread(childId);
     this.wakeTaskWaiters(childId);
     this.scheduleReports(task.parentId);
+    this.settleIdleParent(task.parentId);
+  }
+
+  private settleIdleParent(parentId: string) {
+    const parent = this.tasks.get(parentId);
+    const live = this.live.get(parentId);
+    if (!parent || agentTerminal(parent) || !live || live.status === "running" || live.steering || live.preparing
+      || (live.queue.length && parent.status !== "cancelling") || this.openChildren(parent).length) return;
+    this.report(parentId, agentTaskKey(parent));
+    this.drain(parentId);
   }
 
   private notifyQuestion(task: Task) {
@@ -1223,7 +1287,7 @@ export class Hub {
 
   private drain(threadId: string) {
     const live = this.state(threadId);
-    if (this.shuttingDown || live.held || live.stopped || live.steering || live.status === "running") return;
+    if (this.shuttingDown || live.held || live.stopped || live.steering || live.status === "running" || this.tasks.get(threadId)?.status === "cancelling") return;
     const next = live.queue.shift();
     if (!next) return;
     this.emitQueue(threadId);

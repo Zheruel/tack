@@ -152,24 +152,73 @@ function save(key: string, value: unknown) {
 
 // ---- actions
 
+// A family is valid only when its complete parent chain is intact and acyclic.
+export function isThreadDescendant(threads: Record<string, Thread>, id: string, ancestorId: string): boolean {
+  const ancestor = threads[ancestorId];
+  if (!ancestor) return false;
+  const seen = new Set<string>();
+  let current: string | undefined = id;
+  let found = false;
+  while (current) {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const thread: Thread | undefined = threads[current];
+    if (!thread || thread.id !== current || thread.projectId !== ancestor.projectId) return false;
+    if (current === ancestorId) found = true;
+    current = thread.parentId;
+  }
+  return found;
+}
+
+// Snapshot replies can arrive after a newer approval push. Retain those pushes until
+// every outstanding snapshot has applied, then discard the temporary history.
+let approvalRevision = 0;
+const approvalSnapshots = new Set<number>();
+const approvalChanges = new Map<string, { revision: number; request?: ApprovalRequest }>();
+function approvalSnapshot() {
+  const revision = ++approvalRevision;
+  approvalSnapshots.add(revision);
+  return {
+    reconcile(current: State, requests: ApprovalRequest[], threadId?: string) {
+      const inScope = (id: string) => !threadId || isThreadDescendant(current.threads, id, threadId);
+      const approvals = Object.fromEntries(Object.entries(current.approvals).filter(([, a]) => !inScope(a.threadId)));
+      for (const request of requests) if (inScope(request.threadId)) approvals[request.id] = request;
+      for (const [id, change] of approvalChanges) {
+        if (change.revision <= revision) continue;
+        if (!change.request) delete approvals[id];
+        else if (inScope(change.request.threadId)) approvals[id] = change.request;
+      }
+      return approvals;
+    },
+    release() {
+      approvalSnapshots.delete(revision);
+      const oldest = Math.min(...approvalSnapshots);
+      for (const [id, change] of approvalChanges) if (change.revision <= oldest) approvalChanges.delete(id);
+    },
+  };
+}
+
 export async function openThread(threadId: string) {
   set((s) => {
     const { [threadId]: _, ...unread } = s.unread;
     save("tack.unread", unread);
     return { activeThreadId: threadId, draft: undefined, unread };
   });
-  const { items, queue, held, streaming, approvals } = await call("thread.open", { threadId });
-  const t: Transcript = { order: [], byId: {} };
-  for (const item of [...items, ...streaming]) {
-    if (!(item.id in t.byId)) t.order.push(item.id);
-    t.byId[item.id] = item;
-  }
-  set((s) => ({
-    transcripts: { ...s.transcripts, [threadId]: t },
-    queues: { ...s.queues, [threadId]: queue },
-    held: { ...s.held, [threadId]: held },
-    approvals: { ...s.approvals, ...Object.fromEntries(approvals.map((a) => [a.id, a])) },
-  }));
+  const snapshot = approvalSnapshot();
+  try {
+    const { items, queue, held, streaming, approvals } = await call("thread.open", { threadId });
+    const t: Transcript = { order: [], byId: {} };
+    for (const item of [...items, ...streaming]) {
+      if (!(item.id in t.byId)) t.order.push(item.id);
+      t.byId[item.id] = item;
+    }
+    set((s) => ({
+      transcripts: { ...s.transcripts, [threadId]: t },
+      queues: { ...s.queues, [threadId]: queue },
+      held: { ...s.held, [threadId]: held },
+      approvals: snapshot.reconcile(s, approvals, threadId),
+    }));
+  } finally { snapshot.release(); }
 }
 
 // The project a new thread should start in: the one you're looking at, else the most recent.
@@ -205,7 +254,7 @@ export function updateDraft(patch: Partial<Draft>) {
 
 export async function sendDraft(text: string, attachments: Attachment[]) {
   const draft = get().draft;
-  if (!draft) return;
+  if (!draft) throw new Error("Choose a project before sending a new message.");
   const thread = await call("thread.create", { projectId: draft.projectId });
   const configured = await call("thread.configure", {
     threadId: thread.id,
@@ -214,8 +263,11 @@ export async function sendDraft(text: string, attachments: Attachment[]) {
     access: draft.access,
   });
   set((s) => ({ threads: { ...s.threads, [thread.id]: configured } }));
-  await openThread(thread.id);
   await call("chat.send", { threadId: thread.id, text, attachments });
+  // Only navigate if the user is still composing this draft. A send acknowledgment
+  // remains successful even if loading the resulting transcript fails afterwards.
+  if (get().draft === draft && !get().activeThreadId) await openThread(thread.id).catch(() => {});
+  return thread.id;
 }
 
 export function setShowSettled(show: boolean) {
@@ -249,7 +301,8 @@ function apply(e: Event) {
       set((s) => {
         const { [e.threadId]: _, ...threads } = s.threads;
         const { [e.threadId]: _browser, ...browsers } = s.browsers;
-        return { threads, browsers, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
+        const approvals = Object.fromEntries(Object.entries(s.approvals).filter(([, a]) => a.threadId !== e.threadId));
+        return { threads, browsers, approvals, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
       });
       if (!get().activeThreadId && !get().draft) startDraft();
       return;
@@ -287,6 +340,7 @@ function apply(e: Event) {
     case "queue":
       return set((s) => ({ queues: { ...s.queues, [e.threadId]: e.queue }, held: { ...s.held, [e.threadId]: e.held } }));
     case "approval":
+      if (approvalSnapshots.size) approvalChanges.set(e.request.id, { revision: ++approvalRevision, request: e.request });
       return set((s) => ({ approvals: { ...s.approvals, [e.request.id]: e.request } }));
     case "cli": {
       const name = e.status.name;
@@ -298,6 +352,7 @@ function apply(e: Event) {
       return set((s) => ({ clis: { ...s.clis, [name]: e.status } }));
     }
     case "approval.resolved":
+      if (approvalSnapshots.size) approvalChanges.set(e.approvalId, { revision: ++approvalRevision });
       return set((s) => {
         const { [e.approvalId]: _, ...approvals } = s.approvals;
         return { approvals };
@@ -308,15 +363,19 @@ function apply(e: Event) {
 export function startSync() {
   onEvent(apply);
   onConnect(async () => {
-    const { projects, threads, models, clis, limits } = await call("state.get", {});
-    set({
-      ready: true,
-      projects,
-      threads: Object.fromEntries(threads.map((t) => [t.id, t])),
-      models,
-      clis: Object.fromEntries(clis.map((c) => [c.name, c])),
-      limits,
-    });
+    const snapshot = approvalSnapshot();
+    try {
+      const { projects, threads, models, clis, limits, approvals } = await call("state.get", {});
+      set((s) => ({
+        ready: true,
+        projects,
+        threads: Object.fromEntries(threads.map((t) => [t.id, t])),
+        models,
+        clis: Object.fromEntries(clis.map((c) => [c.name, c])),
+        limits,
+        approvals: snapshot.reconcile(s, approvals),
+      }));
+    } finally { snapshot.release(); }
     // Launch on a new thread. On a reconnect, stay where you were.
     const active = get().activeThreadId;
     if (active && get().threads[active]) await openThread(active);

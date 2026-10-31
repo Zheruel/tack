@@ -326,7 +326,10 @@ export class BrowserService {
     const selected = input.tabId ?? thread.current;
     const tab = selected ? thread.tabs.get(selected) : undefined;
     if (!tab || tab.page.isClosed()) throw new Error("Tab not found in this thread.");
-    if (!(name === "preview_snapshot" && thread.human)) thread.current = selected;
+    if (!(name === "preview_snapshot" && thread.human) && thread.current !== selected) {
+      thread.current = selected;
+      this.emit(id);
+    }
     const page = tab.page;
     if (name === "preview_close") { await page.close(); this.emit(id); return textResult(this.status(id)); }
     if (name === "preview_navigate") { await this.navigate(tab, input.url, input.timeoutMs); this.emit(id); return textResult(this.status(id)); }

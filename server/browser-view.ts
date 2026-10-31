@@ -66,6 +66,29 @@ export class BrowserView {
     await this.session?.then((session) => session.send("Page.stopScreencast")).catch(() => {});
   }
 
+  private async copiedText(): Promise<string> {
+    let frame = this.page.mainFrame();
+    while (true) {
+      const active = await frame.evaluateHandle(() => {
+        let element = document.activeElement;
+        while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+        return element;
+      });
+      let nested;
+      try { nested = await active.asElement()?.contentFrame(); }
+      finally { await active.dispose(); }
+      if (!nested) break;
+      frame = nested;
+    }
+    return frame.evaluate(() => {
+      let element = document.activeElement;
+      while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+      return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+        ? element.value.slice(element.selectionStart ?? 0, element.selectionEnd ?? 0)
+        : window.getSelection()?.toString() ?? "";
+    });
+  }
+
   async input(input: BrowserInput): Promise<{ clipboard?: string }> {
     const session = await this.cdp();
     const size = this.page.viewportSize() ?? { width: 1280, height: 800 };
@@ -86,10 +109,7 @@ export class BrowserView {
       const shortcut = input.action === "down" && (input.modifiers & 6) && !((input.modifiers & 1)) ? input.key.toLowerCase() : "";
       const command = ({ a: "selectAll", c: "copy", x: "cut", z: input.modifiers & 8 ? "redo" : "undo", y: "redo" } as Record<string, string>)[shortcut];
       let clipboard: string | undefined;
-      if (shortcut === "c" || shortcut === "x") clipboard = await this.page.evaluate(() => {
-        const el = document.activeElement;
-        return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0) : window.getSelection()?.toString() ?? "";
-      });
+      if (shortcut === "c" || shortcut === "x") clipboard = await this.copiedText();
       await session.send("Input.dispatchKeyEvent", { type: input.action === "up" ? "keyUp" : input.text ? "keyDown" : "rawKeyDown", key: input.key, code: input.code, windowsVirtualKeyCode: input.keyCode, modifiers: input.modifiers, ...(input.text ? { text: input.text, unmodifiedText: input.text } : {}), ...(command ? { commands: [command] } : {}) });
       if (input.action === "down") this.keys.set(input.code || input.key, { key: input.key, code: input.code });
       else this.keys.delete(input.code || input.key);

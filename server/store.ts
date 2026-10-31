@@ -2,9 +2,9 @@
 // Only finished items are written (one line each), never streaming deltas.
 
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { basename, join } from "node:path";
-import type { Effort, Access, Item, Project, Provider, Question, Queued, Thread } from "../shared/protocol";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { basename, extname, join, resolve } from "node:path";
+import type { Attachment, TranscriptAttachment, Effort, Access, Item, Project, Provider, Question, Queued, Thread } from "../shared/protocol";
 import type { AgentTaskRecord } from "./agent-types";
 
 // A thread's native session with one provider, and how much of the transcript it has seen.
@@ -230,11 +230,29 @@ export class Store {
   }
 
   deleteThread(id: string) {
+    if (!this.thread(id)) return;
+    const attachments = this.attachmentDirectory(id);
     this.db.transaction(() => {
       this.db.query("DELETE FROM agent_tasks WHERE child_id = ? OR parent_id = ?").run(id, id);
       this.db.query("DELETE FROM threads WHERE id = ?").run(id);
     })();
     rmSync(this.file(id), { force: true });
+    rmSync(attachments, { recursive: true, force: true });
+  }
+
+  persistAttachments(threadId: string, messageId: string, attachments: Attachment[]): TranscriptAttachment[] {
+    return attachments.map((attachment, index) => {
+      const image = attachment.kind === "image" || /\.(png|jpe?g|gif|webp)$/i.test(attachment.path);
+      if (!image && attachment.kind === "path") return { name: attachment.name, image: false, path: resolve(attachment.path) };
+      const directory = this.attachmentDirectory(threadId);
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const suffix = attachment.kind === "path" ? extname(attachment.path).toLowerCase()
+        : ({ "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp" }[attachment.mediaType] ?? ".img");
+      const path = join(directory, `${messageId}-${index}${suffix}`);
+      const bytes = attachment.kind === "image" ? Buffer.from(attachment.data, "base64") : readFileSync(attachment.path);
+      writeFileSync(path, bytes, { mode: 0o600 });
+      return { name: attachment.name, image: true, path };
+    });
   }
 
   // Later lines with the same id replace earlier ones (e.g. a tool item getting its output).
@@ -278,6 +296,11 @@ export class Store {
 
   private file(threadId: string) {
     return join(this.transcripts, `${threadId}.jsonl`);
+  }
+
+  private attachmentDirectory(threadId: string) {
+    if (!/^[a-zA-Z0-9_-]{1,200}$/.test(threadId)) throw new Error("Invalid thread ID");
+    return join(this.transcripts, threadId, "attachments");
   }
 }
 

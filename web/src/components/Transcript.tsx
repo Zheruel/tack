@@ -33,6 +33,7 @@ export function Transcript({ threadId }: { threadId: string }) {
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const lastScrollTop = useRef(0);
   const settleUntil = useRef(0); // rows are still being measured after a jump
   const live = useRef(running);
   live.current = running;
@@ -59,6 +60,7 @@ export function Transcript({ threadId }: { threadId: string }) {
     settleUntil.current = Date.now() + 800;
     setAway(false);
     el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
   };
 
   useLayoutEffect(toBottom, [threadId, !!order]);
@@ -69,7 +71,10 @@ export function Transcript({ threadId }: { threadId: string }) {
     const inner = content.current;
     if (!el || !inner) return;
     const ro = new ResizeObserver(() => {
-      if (stick.current && (live.current || Date.now() < settleUntil.current)) el.scrollTop = el.scrollHeight;
+      if (stick.current && (live.current || Date.now() < settleUntil.current)) {
+        el.scrollTop = el.scrollHeight;
+        lastScrollTop.current = el.scrollTop;
+      }
     });
     ro.observe(inner);
     return () => ro.disconnect();
@@ -80,6 +85,8 @@ export function Transcript({ threadId }: { threadId: string }) {
     const el = scroller.current!;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     if (atBottom) stick.current = true;
+    else if (el.scrollTop < lastScrollTop.current) stick.current = false;
+    lastScrollTop.current = el.scrollTop;
     setAway(!atBottom && !stick.current);
   };
   const onWheel = (e: React.WheelEvent) => {

@@ -148,6 +148,7 @@ const handlers: Handlers = {
     models: hub.models,
     clis: Object.values(updates.status),
     limits: hub.limits,
+    approvals: hub.pendingApprovals(),
   }),
   "project.add": ({ path }) => {
     if (!existsSync(path)) throw new Error(`No such folder: ${path}`);
@@ -218,8 +219,7 @@ const handlers: Handlers = {
   "git.branches": ({ projectId }) => git.branches(projectPath(projectId)),
   "git.checkout": async ({ projectId, branch }) => (await git.checkout(projectPath(projectId), branch), null),
   "git.prs": ({ threadId }) => {
-    const t = hub.thread(threadId);
-    const top = t.parentId ? hub.thread(t.parentId) : t; // a sub-agent shows its parent's
+    const top = hub.rootThread(threadId);
     return git.prs(projectPath(top.projectId), top.prs ?? []);
   },
   "cli.update": ({ name }) => (updates.update(name), null),

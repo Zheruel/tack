@@ -1,28 +1,12 @@
-import { useEffect } from "react";
-import type { ApprovalRequest, Thread } from "../../../shared/protocol";
+import { useEffect, useRef } from "react";
+import type { ApprovalRequest } from "../../../shared/protocol";
 import { call } from "../rpc";
-import { useApp } from "../store";
-
-// Include nested agents only when their complete parent chain is intact and acyclic.
-export function isThreadDescendant(threads: Record<string, Thread>, id: string, ancestorId: string): boolean {
-  const ancestor = threads[ancestorId];
-  if (!ancestor) return false;
-  const seen = new Set<string>();
-  let current: string | undefined = id;
-  let found = false;
-  while (current) {
-    if (seen.has(current)) return false;
-    seen.add(current);
-    const thread: Thread | undefined = threads[current];
-    if (!thread || thread.id !== current || thread.projectId !== ancestor.projectId) return false;
-    if (current === ancestorId) found = true;
-    current = thread.parentId;
-  }
-  return found;
-}
+import { isThreadDescendant, useApp } from "../store";
+export { isThreadDescendant } from "../store";
 
 // Docked on top of the composer. One request at a time: ↵ allows, Esc denies.
 export function Approval({ threadId }: { threadId: string }) {
+  const card = useRef<HTMLDivElement>(null);
   const all = useApp((s) => s.approvals);
   const threads = useApp((s) => s.threads);
   // A sub-agent's requests show in its parent too, where the user is likely looking.
@@ -34,8 +18,14 @@ export function Approval({ threadId }: { threadId: string }) {
     if (!request) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const typing = e.target instanceof HTMLInputElement || (e.target instanceof HTMLTextAreaElement && e.target.value.trim() !== "") || (e.target instanceof HTMLElement && e.target.isContentEditable);
-      if (e.key === "Enter" && !typing) answer(request.id, true);
+      const target = e.target;
+      if (!(target instanceof HTMLElement)) return;
+      const composer = card.current?.closest(".thread-composer");
+      const inComposer = !!composer && target instanceof HTMLTextAreaElement && target.closest(".composer-card")?.closest(".thread-composer") === composer && !target.value.trim() && target.getClientRects().length > 0;
+      const inCard = card.current?.contains(target);
+      if (!inCard && (!inComposer || composer?.querySelector("[data-question-card]"))) return;
+      // Buttons keep their native Enter behavior, including the focused Deny button.
+      if (e.key === "Enter" && inComposer) answer(request.id, true);
       else if (e.key === "Escape") answer(request.id, false);
       else return;
       e.preventDefault();
@@ -51,7 +41,7 @@ export function Approval({ threadId }: { threadId: string }) {
   const title = via ? `${via}: ${described.title}` : described.title;
 
   return (
-    <div className="dock-in mb-2 flex items-center gap-3 rounded-2xl border border-brass/25 bg-raised py-2 pr-2 pl-4">
+    <div ref={card} className="dock-in mb-2 flex items-center gap-3 rounded-2xl border border-brass/25 bg-raised py-2 pr-2 pl-4">
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] text-ink">
           {title}
