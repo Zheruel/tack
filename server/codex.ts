@@ -38,11 +38,9 @@ const config = (codexHome: string) => [
 // Skills that install other skills, document OpenAI's products or duplicate Tack's own tools.
 const HIDDEN_CODEX_SKILLS = [".system/skill-installer", ".system/skill-creator", ".system/openai-docs"];
 
-// Plugins Tack threads keep: computer and browser use, and the dev services. Everything else
+// Desktop control uses Tack's shared Cua tools. Keep browser plugins and the dev services. Everything else
 // (documents, pages, sites, pets, ...) is switched off, including plugins added later.
 const KEPT_PLUGINS = new Set([
-  "unified-computer-use@openai-bundled",
-  "computer-use@openai-bundled",
   "browser@openai-bundled",
   "chrome@openai-bundled",
   "codex-app-tools@openai-bundled",
@@ -52,11 +50,10 @@ const KEPT_PLUGINS = new Set([
 
 // Child threads can ask and delegate; they report plain-text summaries to their parent.
 function dynamicTools(opts: SessionOptions) {
-  const tool = (name: "ask" | "show" | "agent" | "wrap_up" | "agent_status" | "agent_send" | "agent_cancel", description: string) => ({ type: "function", name, description, inputSchema: jsonSchema(name) });
+  const tool = (name: "ask" | "show" | "agent" | "agent_status" | "agent_send" | "agent_cancel", description: string) => ({ type: "function", name, description, inputSchema: jsonSchema(name) });
   return [
     tool("ask", TOOLS.ask.description),
     ...Object.entries(SURFACE_TOOLS).map(([name, definition]) => ({ type: "function", name, description: definition.description, inputSchema: z.toJSONSchema(z.object(definition.input)) })),
-    ...(opts.role === "agent" ? [] : [tool("wrap_up", TOOLS.wrap_up.description)]),
     ...(opts.agentModels?.length
       ? [
           tool("agent", agentDescription(opts.agentModels)),

@@ -1,0 +1,58 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-31T11:27:14.135078+00:00"
+  },
+  "title": "Suggested next steps",
+  "launch": {
+    "view": "canvas"
+  },
+  "boards": {
+    "Ghost.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 840,
+      "title": "C \u00b7 Prompt in the composer",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Focus.dc.html": {
+      "x": 1280,
+      "y": 0,
+      "w": 1200,
+      "h": 840,
+      "title": "Ask user \u00b7 Focus dialog",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Stage.dc.html": {
+      "x": 0,
+      "y": 960,
+      "w": 1200,
+      "h": 840,
+      "title": "Ask user \u00b7 Full-pane comparison",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Inspector.dc.html": {
+      "x": 1280,
+      "y": 960,
+      "w": 1200,
+      "h": 840,
+      "title": "Ask user \u00b7 Visual inspector",
+      "expand": "fill",
+      "is_interactive": true
+    }
+  },
+  "order": [
+    "Ghost.dc.html",
+    "Focus.dc.html",
+    "Stage.dc.html",
+    "Inspector.dc.html"
+  ],
+  "notes": {},
+  "pages": [],
+  "designSystems": []
+}

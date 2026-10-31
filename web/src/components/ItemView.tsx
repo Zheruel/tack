@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Streamdown } from "streamdown";
 import { wrapUpOf, type Item } from "../../../shared/protocol";
+import { completionOf } from "../../../shared/completion";
 import { call } from "../rpc";
-import { suggestReply, useApp } from "../store";
+import { useApp } from "../store";
 import { ProviderLogo } from "./Logos";
 import { AgentCard, Asked, tackTool, Visual } from "./TackTools";
 
@@ -19,8 +20,10 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
   switch (item.kind) {
     case "user":
       return item.agents ? <AgentReports item={item} /> : <UserMessage item={item} />;
-    case "assistant":
-      return <Markdown text={item.text} streaming={streaming} />;
+    case "assistant": {
+      const text = completionOf(item.text).text;
+      return text ? <Markdown text={text} streaming={streaming} /> : null;
+    }
     case "turn":
       return <TurnEnd threadId={threadId} item={item} />;
     case "handoff":
@@ -42,23 +45,10 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
   }
 }
 
-// A `wrap_up` call: the agent's closing message, what it left unverified, and buttons for its
-// suggested next moves. Suggestions fill the composer for review and preserve existing text.
-function Closing({ threadId, item }: { threadId: string; item: Tool }) {
+// The closing message stays in the transcript; its suggested prompt belongs in the composer.
+function Closing({ item }: { threadId: string; item: Tool }) {
   const wrap = wrapUpOf(item);
-  const live = useApp((s) => {
-    const t = s.transcripts[threadId];
-    const thread = s.threads[threadId];
-    if (!t || item.status !== "ok" || thread?.status !== "idle" || thread.parentId || thread.questions?.length || s.queues[threadId]?.length) return false;
-    const index = t.order.indexOf(item.id);
-    if (index < 0) return false;
-    return t.order.slice(index + 1).every((id) => {
-      const next = t.byId[id];
-      return next?.kind !== "user" && (!next || !wrapUpOf(next));
-    });
-  });
   if (!wrap) return null;
-  const next = wrap.next ?? [];
   return (
     <div>
       <Markdown text={wrap.summary} streaming={item.status === "running"} />
@@ -68,27 +58,6 @@ function Closing({ threadId, item }: { threadId: string; item: Tool }) {
         </p>
       )}
       {item.status === "error" && <p className="text-[13px] text-danger">This wrap-up did not finish.</p>}
-      {live && next.length > 0 && (
-        <div className="pt-3 pb-1">
-          <p className="mb-2 text-[12px] text-faint">Suggested next steps · edit before sending</p>
-          <div className="flex flex-wrap gap-2">
-            {next.map((n, i) => (
-              <button
-                key={n.message}
-                type="button"
-                title={n.message}
-                aria-label={`Edit suggested request: ${n.label}`}
-                onClick={() => suggestReply(threadId, n.message)}
-                className={`min-h-8 max-w-full cursor-pointer rounded-full border px-3 py-1.5 text-left text-[13px] leading-snug transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass ${
-                  i === 0 ? "border-brass/35 text-brass hover:bg-brass/10" : "border-line text-dim hover:bg-hover hover:text-ink"
-                }`}
-              >
-                {n.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

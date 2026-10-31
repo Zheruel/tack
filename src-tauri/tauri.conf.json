@@ -34,6 +34,7 @@
   "bundle": {
     "active": true,
     "resources": {
+      "resources/cua-driver/": "cua-driver/",
       "../node_modules/playwright/": "browser-runtime/node_modules/playwright/",
       "../node_modules/playwright-core/": "browser-runtime/node_modules/playwright-core/"
     },
@@ -51,6 +52,8 @@
       "icons/icon.icns"
     ],
     "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
       "minimumSystemVersion": "14.0"
     },
     "createUpdaterArtifacts": true

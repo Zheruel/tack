@@ -11,8 +11,8 @@ const timeoutMs = z.number().int().min(100).max(30000).optional();
 const target = { tabId };
 
 export const BROWSER_TOOLS = {
-  preview_status: { description: "List this thread's isolated browser tabs and current page.", input: target },
-  preview_open: { description: "Open or reuse a thread-owned headless browser tab. Only HTTP(S) URLs are supported.", input: { ...target, url: z.string().max(4096).optional(), reuseExistingTab: z.boolean().optional() } },
+  preview_status: { description: "List this chat's tabs in Tack's built-in sidebar browser and its current page.", input: target },
+  preview_open: { description: "Open or reuse a tab in Tack's built-in sidebar browser (Chromium), shared with the user. Default for web and Chrome tasks. Only HTTP(S) URLs are supported.", input: { ...target, url: z.string().max(4096).optional(), reuseExistingTab: z.boolean().optional() } },
   preview_navigate: { description: "Navigate a thread-owned tab to an HTTP(S) URL, including relative URLs.", input: { ...target, url: z.string().max(4096), timeoutMs } },
   preview_snapshot: { description: "Inspect the accessibility tree and visible interactive elements. Refs expire on navigation or the next snapshot. Set includeImage to see the screenshot.", input: { ...target, includeImage: z.boolean().optional() } },
   preview_act: { description: "Act on a current snapshot ref using locator='aria-ref=<ref>', use page keyboard/scroll, or reload/back/forward. Take a fresh snapshot after changes.", input: { ...target, action: z.enum(["click", "type", "select", "press", "scroll", "hover", "check", "uncheck", "reload", "back", "forward"]), locator: z.string().max(200).optional(), text: z.string().max(20000).optional(), clear: z.boolean().optional(), values: z.array(z.string().max(1000)).max(100).optional(), key: z.string().max(100).optional(), deltaX: z.number().min(-10000).max(10000).optional(), deltaY: z.number().min(-10000).max(10000).optional(), timeoutMs } },

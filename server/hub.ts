@@ -16,6 +16,7 @@ import { expandVisualize, VISUALIZE_COMMAND } from "./visualize";
 import { agentTaskKey, agentTerminal, type AgentTaskRecord } from "./agent-types";
 import { prepareAgentWorkspace } from "./agent-workspace";
 import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../shared/protocol";
+import { completionOf } from "../shared/completion";
 import type {
   Access,
   ApprovalRequest,
@@ -40,7 +41,7 @@ const MAX_RUNNING_AGENTS = 6; // per parent thread
 const REPORT_COALESCE_MS = 1500; // sub-agents that finish together are reported together
 const REPORT_INLINE_BYTES = 16_000; // beyond this, a report points at agent_status instead
 const AGENT_WAIT_MS = 10 * 60_000;
-const TOOLS_VERSION = 4;
+const TOOLS_VERSION = 7;
 
 function createSession(provider: Provider, opts: SessionOptions, events: SessionEvents): AgentSession {
   return provider === "codex" ? new CodexSession(opts, events) : new ClaudeSession(opts, events);
@@ -572,13 +573,15 @@ export class Hub {
 
   // Stopping a thread stops its sub-agents too, without waking it for their reports.
   async interrupt(threadId: string) {
+    const devices = this.surfaces.devices.interrupt(threadId);
+    const desktop = this.surfaces.desktop.finishTurn(threadId, true);
     const live = this.state(threadId);
     live.stopped = true;
     this.store.setStopped(threadId, true);
     this.disposeReports(threadId);
     const own = this.tasks.get(threadId);
     if (own && !agentTerminal(own)) {
-      await this.stopTask(own);
+      await Promise.all([devices, desktop, this.stopTask(own)]);
       return;
     }
     if (live?.status === "running") {
@@ -597,6 +600,8 @@ export class Hub {
     }
     live.preparing?.abort();
     await Promise.all([
+      devices,
+      desktop,
       ...[...this.tasks.values()].filter((t) => t.parentId === threadId).map((t) => this.stopTask(t)),
       live.session?.interrupt().catch(() => {}),
     ]);
@@ -632,6 +637,8 @@ export class Hub {
     }
     for (const [key, entry] of this.taskHistory) if (entry.id === threadId || entry.parentId === threadId) this.taskHistory.delete(key);
     void this.surfaces.browser.closeThread(threadId);
+    void this.surfaces.desktop.closeThread(threadId);
+    void this.surfaces.devices.closeThread(threadId);
     const live = this.live.get(threadId);
     live?.preparing?.abort();
     if (live?.cancelTimer) clearTimeout(live.cancelTimer);
@@ -760,6 +767,7 @@ export class Hub {
     };
     const approve = (tool: string, input: unknown, signal: AbortSignal) => new Promise<boolean>((resolve) => {
       if (signal.aborted || !current() || current()?.stopped) return resolve(false);
+      if ((tool === "DesktopApp" || tool === "BrowserInstall") && this.store.thread(threadId)?.access === "full") return resolve(true);
       const request: ApprovalRequest = { id: crypto.randomUUID(), threadId, provider, tool, input };
       this.approvals.set(request.id, { request, resolve });
       signal.addEventListener("abort", () => this.answer(request.id, false), { once: true });
@@ -773,6 +781,7 @@ export class Hub {
       item: (item, final) => {
         const live = current();
         if (!live) return;
+        if (final && item.kind === "assistant") item = { ...item, ...completionOf(item.text) };
         live.deltas.delete(item.id);
         if (final) {
           live.streaming.delete(item.id);
@@ -835,8 +844,9 @@ export class Hub {
         if (task) this.scheduleReports(task.parentId);
       },
       agent: (tool, input, signal, requestKey) => current() ? this.agentCall(threadId, tool, input, signal, requestKey) : JSON.stringify({ error: "Agent session is no longer active.", started: false }),
-      surface: (name, input, signal) => this.surfaces.execute(threadId, name, input, signal,
-        () => approve("BrowserInstall", {}, signal ?? new AbortController().signal)),
+      surface: (name, input, signal) => current()?.status === "running" && !current()?.stopped
+        ? this.surfaces.execute(threadId, name, input, signal, approve)
+        : Promise.resolve({ content: [{ type: "text", text: "Agent session is no longer active." }], isError: true }),
     };
   }
 
@@ -1053,6 +1063,8 @@ export class Hub {
   }
 
   private async stopTask(task: Task): Promise<void> {
+    const devices = this.surfaces.devices.interrupt(task.id);
+    const desktop = this.surfaces.desktop.finishTurn(task.id, true);
     const live = this.state(task.id);
     const children = [...this.tasks.values()].filter((t) => t.parentId === task.id && !agentTerminal(t));
     live.stopped = true;
@@ -1073,7 +1085,7 @@ export class Hub {
     this.emitThread(task.id);
     this.wakeTaskWaiters(task.id);
     live.preparing?.abort();
-    await Promise.all(children.map((t) => this.stopTask(t)));
+    await Promise.all([devices, desktop, ...children.map((t) => this.stopTask(t))]);
     if (!live.stopping) {
       this.settleIdleParent(task.parentId);
       return;
@@ -1255,6 +1267,7 @@ export class Hub {
   }
 
   private finishRun(threadId: string, error?: string) {
+    void this.surfaces.desktop.finishTurn(threadId);
     if (this.shuttingDown) return;
     const live = this.live.get(threadId);
     if (!live) return;

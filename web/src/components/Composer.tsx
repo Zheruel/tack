@@ -2,10 +2,12 @@ import * as Menu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
 import { ArrowUp, Check, CornerUpRight, Folder, GitBranch, GitFork, ListPlus, Paperclip, Search, ShieldCheck, ShieldOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { DEFAULT_EFFORT, type Access, type Attachment, type Effort, type Provider } from "../../../shared/protocol";
 import { onFileDrop } from "../native";
 import { call } from "../rpc";
 import { sendDraft, updateDraft, useApp } from "../store";
+import { promptSuggestion } from "../suggestions";
 import { Approval } from "./Approvals";
 import { CompletionMenu, useCommandNames, useCompletion, type Suggestion } from "./Autocomplete";
 import { PROVIDER_NAMES } from "./Logos";
@@ -18,6 +20,7 @@ interface ComposerDraft {
   attachments: Attachment[];
   sending?: boolean;
   error?: string;
+  dismissedSuggestion?: string;
   editing?: { id: string; attachments: Attachment[]; draft: { text: string; attachments: Attachment[] } };
 }
 const drafts = new Map<string, ComposerDraft>();
@@ -53,6 +56,7 @@ export function Composer({ threadId }: { threadId?: string }) {
   const thread = useApp((s) => (threadId ? s.threads[threadId] : undefined));
   const draft = useApp((s) => s.draft);
   const composerRequest = useApp((s) => s.composerRequest);
+  const predicted = useApp(useShallow((s) => promptSuggestion(threadId, s)));
   const config: Config | undefined = thread ?? draft;
   const key = threadId ?? DRAFT;
   const cached = useSyncExternalStore(subscribeDrafts, () => draftFor(key));
@@ -68,6 +72,34 @@ export function Composer({ threadId }: { threadId?: string }) {
   const { completion, move, dismiss, setIndex } = useCompletion(text, caret, projectId, provider);
   const commandNames = useCommandNames(projectId, provider);
   const mirror = useRef<HTMLDivElement>(null);
+  const ghost = useRef<HTMLButtonElement>(null);
+  const [suggestionHeight, setSuggestionHeight] = useState(47);
+  const suggestion = predicted && cached.dismissedSuggestion !== predicted.id && !text.length && !attachments.length && !sending && !editing && !error && !completion && composerRequest?.threadId !== threadId ? predicted : undefined;
+  const dismissSuggestion = () => {
+    if (predicted) changeDraft(key, (d) => ({ ...d, dismissedSuggestion: predicted.id }));
+  };
+  const acceptSuggestion = () => {
+    const current = promptSuggestion(threadId, useApp.getState());
+    const draft = draftFor(key);
+    if (!suggestion || current?.id !== suggestion.id || current.text !== suggestion.text || draft.text.length || draft.attachments.length || draft.sending || draft.editing || draft.dismissedSuggestion === current.id) return;
+    changeDraft(key, (d) => ({ ...d, text: current.text, dismissedSuggestion: current.id }));
+    requestAnimationFrame(() => {
+      const el = input.current;
+      if (el?.dataset.composerKey !== key) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      setCaret(el.value.length);
+    });
+  };
+  useEffect(() => {
+    const el = ghost.current;
+    if (!el) return;
+    const measure = () => setSuggestionHeight(Math.max(47, Math.ceil(el.scrollHeight)));
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    measure();
+    return () => observer.disconnect();
+  }, [suggestion?.id, suggestion?.text]);
 
   // Holding ⌘ turns the steer button into a queue button, since ⌘↵ queues.
   const [queueKey, setQueueKey] = useState(false);
@@ -204,6 +236,10 @@ export function Composer({ threadId }: { threadId?: string }) {
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (suggestion && !e.nativeEvent.isComposing && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      if (e.key === "Tab") { e.preventDefault(); acceptSuggestion(); return; }
+      if (e.key === "Escape") { e.preventDefault(); dismissSuggestion(); return; }
+    }
     // A fully typed "/command" sends on Enter, as in Claude Code, rather than completing itself again.
     const picked = completion?.items[completion.index];
     const typedInFull = !!completion && !!picked?.label.startsWith("/") && picked.insert.trimEnd() === text.slice(completion.start, completion.end);
@@ -300,11 +336,13 @@ export function Composer({ threadId }: { threadId?: string }) {
             </div>
             <textarea
               ref={input}
+              data-composer-key={key}
               aria-label={threadId ? "Message" : "New message"}
               value={text}
               rows={2}
               autoFocus
               onChange={(e) => {
+                dismissSuggestion();
                 setText(e.target.value);
                 setCaret(e.target.selectionStart);
               }}
@@ -317,9 +355,16 @@ export function Composer({ threadId }: { threadId?: string }) {
                   addImages(e.clipboardData.files);
                 }
               }}
-              placeholder={running ? "Steer the agent. ⌘↵ queues it for after. ⌥↑ edits the last queued" : threadId ? "Reply" : "Ask anything. @ files, / commands"}
+              placeholder={suggestion ? "" : running ? "Steer the agent. ⌘↵ queues it for after. ⌥↑ edits the last queued" : threadId ? "Reply" : "Ask anything. @ files, / commands"}
+              style={suggestion ? { minHeight: suggestionHeight } : undefined}
               className="block max-h-[300px] min-h-[47px] w-full resize-none bg-transparent p-0 text-[14.5px] leading-[1.625] tracking-[-0.003em] text-transparent caret-ink placeholder:text-faint focus:outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             />
+            {suggestion && (
+              <>
+                <button ref={ghost} type="button" tabIndex={-1} className="composer-suggestion" aria-label={`Use suggested prompt: ${suggestion.text}`} onClick={acceptSuggestion}>{suggestion.text}</button>
+                <button type="button" tabIndex={-1} className="composer-suggestion-dismiss" aria-label="Dismiss suggested prompt" title="Dismiss suggestion" onClick={dismissSuggestion}><X size={13} /></button>
+              </>
+            )}
           </div>
           <div className="composer-controls flex items-center gap-1 px-2 pb-2">
             <button

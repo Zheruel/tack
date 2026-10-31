@@ -80,6 +80,8 @@ function answer(approvalId: string, allow: boolean) {
 function describe(r: ApprovalRequest): { title: string; body?: string; note?: string } {
   const i = (r.input ?? {}) as Record<string, any>;
   switch (r.tool) {
+    case "DesktopApp":
+      return { title: `Allow computer use in ${i.app}`, body: `${i.bundleId} — ${i.reason}`, note: "For this chat. Revoke from Computer use." };
     case "BrowserInstall":
       return { title: "Set up isolated browser", note: "Download Chromium once for browser testing and visual previews. This does not open your Chrome or control your mouse." };
     case "Bash":

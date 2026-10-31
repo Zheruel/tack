@@ -47,12 +47,9 @@ function tackTools(events: SessionEvents, opts: SessionOptions) {
             }),
           ]
         : []),
-      ...(opts.role === "agent"
-        ? []
-        : [tool("wrap_up", TOOLS.wrap_up.description, TOOLS.wrap_up.input, async () => text("Shown to the user."), { alwaysLoad: true })]),
       ...Object.entries(SURFACE_TOOLS).map(([name, definition]) => tool(name, definition.description, definition.input,
         async (input, extra) => events.surface(name, input, signalOf(extra)),
-        { searchHint: name.startsWith("preview_") ? "isolated browser testing, screenshot, navigate, click, type" : "visualize, interactive visual, chart, diagram, canvas, HTML preview" },
+        { searchHint: name.startsWith("device_") ? "iOS Simulator, Android emulator, mobile app, screenshot, tap, swipe, device" : name.startsWith("desktop_") ? "Mac desktop computer use, native apps, windows, screenshot, click, type" : name.startsWith("preview_") ? "built-in sidebar browser, Chrome, web pages, navigate, DOM, screenshot" : "visualize, interactive visual, chart, diagram, canvas, HTML preview" },
       )),
     ],
   });
@@ -124,10 +121,6 @@ export class ClaudeSession implements AgentSession {
         systemPrompt: systemPrompt("claude", opts.role),
         tools: BUILTIN_TOOLS,
         mcpServers: { tack: tackTools(events, opts) },
-        hooks: {
-          // wrap_up is the last call of a turn; skip the model request that would only say "done".
-          PostToolUse: [{ matcher: "mcp__tack__wrap_up", hooks: [async () => ({ continue: false })] }],
-        },
         skills: opts.skills ?? "all",
         title: "Tack", // Tack names threads itself; skips Claude's title-generation request
         permissionMode: opts.access === "full" ? "bypassPermissions" : "default",

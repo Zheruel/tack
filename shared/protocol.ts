@@ -1,9 +1,17 @@
 // Wire protocol between the UI and the sidecar. One WebSocket, JSON frames.
+import type { DeviceAction, DevicePlatform, DevicePreview } from "./devices";
 
 export type Provider = "claude" | "codex";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 export type Access = "full" | "ask";
 export type ThreadStatus = "idle" | "running" | "error";
+
+export interface DesktopStatus {
+  available: boolean;
+  apps: { bundleId: string; name: string }[];
+  active: boolean;
+  needsSetup?: boolean;
+}
 
 export interface Project {
   id: string;
@@ -103,7 +111,7 @@ export interface TranscriptAttachment {
 export type Item =
   // `agents`: not typed by the user but sub-agents' reports, delivered by Tack.
   | { id: string; kind: "user"; text: string; attachments?: TranscriptAttachment[]; agents?: boolean; ts: number }
-  | { id: string; kind: "assistant"; text: string; ts: number }
+  | { id: string; kind: "assistant"; text: string; suggestedPrompt?: string; ts: number }
   | { id: string; kind: "thinking"; text: string; ts: number }
   | {
       id: string;
@@ -124,6 +132,8 @@ export type Item =
 export interface WrapUp {
   summary: string;
   unverified?: string;
+  suggestedPrompt?: string;
+  // Earlier transcripts stored several suggestions; the composer uses the first.
   next?: { label: string; message: string }[];
 }
 
@@ -145,6 +155,7 @@ export function wrapUpOf(item: Item): WrapUp | undefined {
   return {
     summary: i.summary,
     unverified: typeof i.unverified === "string" ? i.unverified.trim() || undefined : undefined,
+    suggestedPrompt: typeof i.suggestedPrompt === "string" ? i.suggestedPrompt.trim() : undefined,
     next: next.length ? next : undefined,
   };
 }
@@ -224,6 +235,13 @@ export interface GitInfo {
 
 // Client -> server requests. Each carries an id; the server replies with { id, result } or { id, error }.
 export interface Requests {
+  "device.get": { params: { threadId: string }; result: DevicePreview };
+  "device.command": {
+    params: { threadId: string; name: "device_list" | "device_open" | "device_snapshot" | "device_act" | "device_close"; input: { platform?: DevicePlatform; deviceId?: string; snapshotId?: string; action?: DeviceAction; shutdown?: boolean; includeTree?: boolean; displayOnly?: boolean } };
+    result: DevicePreview;
+  };
+  "desktop.get": { params: { threadId: string }; result: DesktopStatus };
+  "desktop.revoke": { params: { threadId: string }; result: DesktopStatus };
   "browser.get": { params: { threadId: string }; result: BrowserPreview };
   "browser.watch": { params: { threadId: string; visible: boolean }; result: BrowserPreview };
   "browser.resize": { params: { threadId: string; width: number; height: number }; result: null };
@@ -287,6 +305,8 @@ export type ClientFrame = { [M in Method]: { id: number; method: M; params: Requ
 
 // Server -> client pushes.
 export type Event =
+  | { type: "device"; threadId: string; preview: DevicePreview }
+  | { type: "desktop"; threadId: string; status: DesktopStatus }
   | { type: "browser.frame"; threadId: string; frame: BrowserFrame }
   | { type: "browser"; threadId: string; preview: BrowserPreview }
   | { type: "project.upserted"; project: Project }

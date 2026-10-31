@@ -1,11 +1,13 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, ChevronRight, FolderPlus, Globe, PanelRight } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, Globe, PanelRight, Smartphone } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Composer, MenuContent, MenuItem } from "./components/Composer";
 import { ThreadDetails } from "./components/ThreadDetails";
 import { addProject, Sidebar, SidebarToggle } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
 import { BrowserPane } from "./components/BrowserPane";
+import { DesktopControl } from "./components/DesktopControl";
+import { DevicePane } from "./components/DevicePane";
 import { Approval } from "./components/Approvals";
 import { Questions } from "./components/Questions";
 import { openExternal } from "./native";
@@ -19,6 +21,7 @@ export function App() {
   const drafting = useApp((s) => !!s.draft);
   const hasProjects = useApp((s) => s.projects.length > 0);
   const browserOpen = useApp((s) => s.browserOpen);
+  const deviceOpen = useApp((s) => s.deviceOpen);
   useShortcuts();
 
   return (
@@ -34,7 +37,7 @@ export function App() {
                 <Transcript threadId={activeId!} />
                 <ComposerOrNote threadId={activeId!} />
               </div>
-              {browserOpen && <BrowserPane key={activeId!} threadId={activeId!} />}
+              {deviceOpen ? <DevicePane key={activeId!} threadId={activeId!} onClose={() => useApp.setState({ deviceOpen: false })} /> : browserOpen && <BrowserPane key={activeId!} threadId={activeId!} />}
             </div>
         ) : drafting ? (
           <DraftView />
@@ -147,6 +150,7 @@ function Header({ threadId }: { threadId: string }) {
   const [editing, setEditing] = useState(false);
   const sidebar = useApp((s) => s.sidebar);
   const browserOpen = useApp((s) => s.browserOpen);
+  const deviceOpen = useApp((s) => s.deviceOpen);
 
   const rename = (title: string) => {
     setEditing(false);
@@ -191,14 +195,24 @@ function Header({ threadId }: { threadId: string }) {
         </span>
       )}
       <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <DesktopControl key={threadId} threadId={threadId} />
         <button
-          onClick={() => useApp.setState({ browserOpen: !browserOpen })}
+          onClick={() => useApp.setState({ browserOpen: !browserOpen, deviceOpen: false })}
           title="Browser (⌘⇧B)"
           aria-label="Toggle browser"
           aria-pressed={browserOpen}
           className={`browser-toggle flex size-7 shrink-0 items-center justify-center rounded-md text-dim transition-colors hover:bg-hover hover:text-ink ${browserOpen ? "bg-hover" : ""}`}
         >
           <Globe size={15} strokeWidth={1.8} />
+        </button>
+        <button
+          onClick={() => useApp.setState({ deviceOpen: !deviceOpen, browserOpen: false })}
+          title="Devices (⌘⇧D)"
+          aria-label="Toggle devices"
+          aria-pressed={deviceOpen}
+          className={`flex size-7 shrink-0 items-center justify-center rounded-md text-dim transition-colors hover:bg-hover hover:text-ink ${deviceOpen ? "bg-hover" : ""}`}
+        >
+          <Smartphone size={15} strokeWidth={1.8} />
         </button>
         <button
           data-details-toggle
@@ -221,7 +235,12 @@ function useShortcuts() {
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        useApp.setState((s) => ({ browserOpen: !s.browserOpen }));
+        useApp.setState((s) => ({ browserOpen: !s.browserOpen, deviceOpen: false }));
+        return;
+      }
+      if (e.shiftKey && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        useApp.setState((s) => ({ deviceOpen: !s.deviceOpen, browserOpen: false }));
         return;
       }
       if (!e.metaKey) return;

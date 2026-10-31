@@ -1,0 +1,58 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-31T11:27:14.135078+00:00"
+  },
+  "title": "Earlier next-step explorations",
+  "launch": {
+    "view": "canvas"
+  },
+  "boards": {
+    "List.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 840,
+      "title": "A \u00b7 Next-step list",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Shelf.dc.html": {
+      "x": 1280,
+      "y": 0,
+      "w": 1200,
+      "h": 840,
+      "title": "D \u00b7 Prompt shelf \u00b7 Recommended",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Choices.dc.html": {
+      "x": 1280,
+      "y": 0,
+      "w": 1200,
+      "h": 840,
+      "title": "B \u00b7 Combine next steps",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Ask.dc.html": {
+      "x": 0,
+      "y": 960,
+      "w": 1200,
+      "h": 840,
+      "title": "Ask user \u00b7 A question at a time",
+      "expand": "fill",
+      "is_interactive": true
+    }
+  },
+  "order": [
+    "List.dc.html",
+    "Shelf.dc.html",
+    "Choices.dc.html",
+    "Ask.dc.html"
+  ],
+  "notes": {},
+  "pages": [],
+  "designSystems": []
+}

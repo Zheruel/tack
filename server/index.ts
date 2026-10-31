@@ -71,7 +71,10 @@ const broadcast = (event: Event) => {
 };
 
 const git = new Git(vars);
-const surfaces = new Surfaces(join(dataDir, "visuals"), (threadId, preview) => broadcast({ type: "browser", threadId, preview }));
+const surfaces = new Surfaces(join(dataDir, "visuals"),
+  (threadId, preview) => broadcast({ type: "browser", threadId, preview }),
+  (threadId, status) => broadcast({ type: "desktop", threadId, status }),
+  (threadId, preview) => broadcast({ type: "device", threadId, preview }), vars);
 const hub = new Hub(store, broadcast, { bins, vars }, git, surfaces);
 const updates = new Updates(
   bins,
@@ -97,6 +100,26 @@ const workspacePath = (projectId: string, threadId?: string) => {
 type Handlers = { [M in keyof Requests]: (p: Requests[M]["params"], ws: Socket) => Promise<Requests[M]["result"]> | Requests[M]["result"] };
 
 const handlers: Handlers = {
+  "device.get": ({ threadId }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    return surfaces.devices.getPreview(threadId);
+  },
+  "device.command": async ({ threadId, name, input }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    if (!["device_list", "device_open", "device_snapshot", "device_act", "device_close"].includes(name)) throw new Error("Unsupported device command");
+    const result = await surfaces.devices.execute(threadId, name, input);
+    if (result.isError) throw new Error(result.content.filter((p) => p.type === "text").map((p) => p.text).join("\n"));
+    return surfaces.devices.getPreview(threadId);
+  },
+  "desktop.get": ({ threadId }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    return surfaces.desktop.status(threadId);
+  },
+  "desktop.revoke": async ({ threadId }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    await surfaces.desktop.finishTurn(threadId, true);
+    return surfaces.desktop.status(threadId);
+  },
   "browser.get": ({ threadId }) => {
     if (!store.thread(threadId)) throw new Error("Thread not found");
     return { ...surfaces.browser.getPreview(threadId), needsInstall: !chromiumInstalled() };

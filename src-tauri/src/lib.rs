@@ -128,6 +128,48 @@ fn hide_writing_tools_affordance() {
     }
 }
 
+// Permission prompts must originate in Tack's app process so its children inherit Tack's grants.
+#[tauri::command]
+fn request_desktop_permission(kind: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+        #[link(name = "ApplicationServices", kind = "framework")]
+        extern "C" {
+            static kAXTrustedCheckOptionPrompt: *const c_void;
+            fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            static kCFBooleanTrue: *const c_void;
+            fn CFDictionaryCreate(allocator: *const c_void, keys: *const *const c_void, values: *const *const c_void, count: isize, key_callbacks: *const c_void, value_callbacks: *const c_void) -> *const c_void;
+            fn CFRelease(value: *const c_void);
+        }
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" { fn CGRequestScreenCaptureAccess() -> bool; }
+        if !matches!(kind, "accessibility" | "screenRecording" | "all") {
+            return Err("Unknown desktop permission.".into());
+        }
+        if kind != "screenRecording" {
+            unsafe {
+                // Both dictionary entries are immortal Core Foundation constants.
+                let keys = [kAXTrustedCheckOptionPrompt];
+                let values = [kCFBooleanTrue];
+                let options = CFDictionaryCreate(std::ptr::null(), keys.as_ptr(), values.as_ptr(), 1, std::ptr::null(), std::ptr::null());
+                if options.is_null() { return Err("Could not request app control permission.".into()); }
+                AXIsProcessTrustedWithOptions(options);
+                CFRelease(options);
+            }
+        }
+        if kind != "accessibility" {
+            unsafe { CGRequestScreenCaptureAccess(); }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = kind; Err("Computer use currently requires macOS.".into()) }
+}
+
 pub fn run() {
     let sidecar = Arc::new(Sidecar::default());
     let app = tauri::Builder::default()
@@ -136,7 +178,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(sidecar.clone())
-        .invoke_handler(tauri::generate_handler![server_info])
+        .invoke_handler(tauri::generate_handler![server_info, request_desktop_permission])
         .setup({
             let sidecar = sidecar.clone();
             move |app| {

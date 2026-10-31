@@ -21,6 +21,7 @@ import type {
   Thread,
 } from "../../shared/protocol";
 import { DEFAULT_EFFORT, DEFAULT_MODEL } from "../../shared/protocol";
+import type { DevicePreview } from "../../shared/devices";
 import { call, onConnect, onEvent } from "./rpc";
 import type { UpdateItem } from "./updates";
 
@@ -38,6 +39,8 @@ export interface Draft {
 }
 
 interface State {
+  deviceOpen: boolean;
+  devices: Record<string, DevicePreview>;
   browserOpen: boolean;
   browsers: Record<string, BrowserPreview>;
   ready: boolean;
@@ -74,6 +77,8 @@ interface State {
 }
 
 export const useApp = create<State>(() => ({
+  deviceOpen: false,
+  devices: {},
   browserOpen: false,
   browsers: {},
   ready: false,
@@ -279,8 +284,10 @@ export function setShowSettled(show: boolean) {
 
 function apply(e: Event) {
   switch (e.type) {
+    case "device":
+      return set((s) => ({ devices: { ...s.devices, [e.threadId]: e.preview }, ...(s.activeThreadId === e.threadId && e.preview.open.length && !s.devices[e.threadId]?.open.length ? { deviceOpen: true, browserOpen: false } : {}) }));
     case "browser":
-      return set((s) => ({ browsers: { ...s.browsers, [e.threadId]: e.preview } }));
+      return set((s) => ({ browsers: { ...s.browsers, [e.threadId]: e.preview }, ...(s.activeThreadId === e.threadId && e.preview.tabs.length && !s.browsers[e.threadId]?.tabs.length ? { browserOpen: true, deviceOpen: false } : {}) }));
     case "project.upserted":
       return set((s) => ({ projects: [...s.projects.filter((p) => p.id !== e.project.id), e.project] }));
     case "project.removed":
@@ -301,8 +308,9 @@ function apply(e: Event) {
       set((s) => {
         const { [e.threadId]: _, ...threads } = s.threads;
         const { [e.threadId]: _browser, ...browsers } = s.browsers;
+        const { [e.threadId]: _device, ...devices } = s.devices;
         const approvals = Object.fromEntries(Object.entries(s.approvals).filter(([, a]) => a.threadId !== e.threadId));
-        return { threads, browsers, approvals, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
+        return { threads, browsers, devices, approvals, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
       });
       if (!get().activeThreadId && !get().draft) startDraft();
       return;

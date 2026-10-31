@@ -4,6 +4,12 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 
 export const inTauri = isTauri();
 
+let desktopPermissionRequest: Promise<unknown> | undefined;
+export async function requestDesktopPermission(kind: "accessibility" | "screenRecording" | "all") {
+  if (!inTauri) throw new Error("Open Tack’s desktop app to grant macOS permissions.");
+  await (desktopPermissionRequest ??= invoke("request_desktop_permission", { kind }).finally(() => { desktopPermissionRequest = undefined; }));
+}
+
 export async function serverUrl(): Promise<string> {
   if (!inTauri) return "ws://127.0.0.1:7357/ws";
   const { port, token } = await invoke<{ port: number; token: string }>("server_info");
