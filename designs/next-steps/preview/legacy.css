@@ -1,0 +1,61 @@
+@import "../../../web/src/styles.css";
+@source "../../../web/src";
+@source "./";
+
+.ns-panel { margin-top: 20px; border: 1px solid var(--color-line); border-radius: 14px; background: color-mix(in oklab, var(--color-raised) 38%, var(--color-canvas)); padding: 14px 18px 0; }
+.ns-panel-heading, .ns-shelf-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ns-eyebrow { color: var(--color-faint); font-size: 11.5px; line-height: 18px; font-weight: 500; }
+.ns-icon { display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; color: var(--color-faint); border-radius: 7px; flex-shrink: 0; cursor: pointer; }
+.ns-icon:hover { background: var(--color-hover); color: var(--color-ink); }
+.ns-panel h2 { margin: 5px 0 4px; color: var(--color-ink); font-size: 16px; line-height: 24px; font-weight: 550; letter-spacing: -.015em; }
+.ns-description { margin: 0; color: var(--color-dim); font-size: 13px; line-height: 20px; }
+.ns-rows { display: flex; flex-direction: column; margin-top: 14px; }
+.ns-row { display: flex; align-items: center; gap: 13px; width: 100%; min-height: 66px; text-align: left; border-top: 1px solid var(--color-line); padding: 12px 0; cursor: pointer; transition: color .12s; }
+.ns-row:hover { background: var(--color-hover); margin: 0 -10px; padding: 12px 10px; width: calc(100% + 20px); border-radius: 8px; }
+.ns-number { width: 18px; flex-shrink: 0; color: var(--color-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ns-row-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
+.ns-row-title { font-size: 13.5px; line-height: 19px; color: var(--color-ink); font-weight: 500; }
+.ns-row-description { font-size: 12px; line-height: 18px; color: var(--color-dim); }
+.ns-row-arrow { flex-shrink: 0; color: var(--color-faint); }
+.ns-row:first-child .ns-row-title, .ns-row:first-child .ns-row-arrow { color: var(--color-brass); }
+.ns-footnote { color: var(--color-faint); font-size: 11.5px; line-height: 18px; }
+.ns-list > .ns-footnote { margin: 3px 0 13px; }
+.ns-option-list { display: flex; flex-direction: column; gap: 7px; margin-top: 16px; }
+.ns-option { display: flex; position: relative; align-items: flex-start; gap: 12px; padding: 11px 12px; border: 1px solid var(--color-line); border-radius: 9px; cursor: pointer; }
+.ns-option:hover { background: var(--color-hover); }
+.ns-option.is-selected { border-color: color-mix(in oklab, var(--color-brass) 48%, transparent); background: color-mix(in oklab, var(--color-brass) 7%, transparent); }
+.ns-option input { position: absolute; opacity: 0; width: 16px; height: 16px; }
+.ns-option:focus-within { outline: 2px solid var(--color-brass); outline-offset: 2px; }
+.ns-check { display: flex; justify-content: center; align-items: center; width: 16px; height: 16px; margin-top: 2px; border: 1px solid var(--color-faint); border-radius: 4px; flex-shrink: 0; }
+.is-selected .ns-check { border-color: var(--color-brass); background: var(--color-brass); color: var(--color-brass-ink); }
+.ns-choice-footer { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 14px 0; }
+.ns-primary { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 11px; border-radius: 7px; background: var(--color-brass); color: var(--color-brass-ink); font-weight: 550; font-size: 12px; cursor: pointer; }
+.ns-primary:hover { filter: brightness(1.08); }
+.ns-primary:disabled { opacity: .45; cursor: default; }
+.ns-composer-wrap { position: relative; flex-shrink: 0; }
+.ns-shelf-wrap { max-width: 768px; padding: 0 32px; margin: 0 auto; }
+.ns-shelf { position: relative; border-top: 1px solid var(--color-line); margin: 0 2px 13px; padding: 10px 6px 0; }
+.ns-shelf-tools { display: flex; align-items: center; gap: 5px; }
+.ns-more { display: flex; align-items: center; justify-content: center; min-height: 28px; gap: 4px; color: var(--color-faint); font-size: 11.5px; cursor: pointer; padding: 0 5px; border-radius: 6px; }
+.ns-more:hover, .ns-more[aria-expanded=true] { color: var(--color-ink); background: var(--color-hover); }
+.ns-prompt-button { display: flex; width: 100%; text-align: left; align-items: center; gap: 20px; padding: 4px 0 8px; cursor: pointer; color: var(--color-dim); font-size: 13.5px; line-height: 21px; }
+.ns-prompt-button span { flex: 1; }
+.ns-prompt-button svg { color: var(--color-brass); flex-shrink: 0; }
+.ns-prompt-button:hover { color: var(--color-ink); }
+.ns-alternatives { position: absolute; bottom: calc(100% + 8px); right: 0; left: 0; z-index: 60; padding: 6px; border: 1px solid var(--color-line); border-radius: 12px; background: var(--color-raised); box-shadow: 0 16px 48px #0005; }
+.ns-alternatives button { display: flex; width: 100%; align-items: center; gap: 12px; text-align: left; padding: 12px; border-radius: 7px; cursor: pointer; color: var(--color-faint); }
+.ns-alternatives button:hover { background: var(--color-hover); }
+.has-ghost textarea::placeholder { color: transparent; }
+.has-ghost .composer-card > div.relative { padding-top: 42px; padding-bottom: 29px; }
+.ns-ghost-content { position: absolute; top: 8px; left: 16px; right: 12px; z-index: 11; pointer-events: none; }
+.ns-ghost-content button { pointer-events: auto; }
+.ns-ghost-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.ns-ghost-text { display: block; width: calc(100% - 4px); text-align: left; color: var(--color-faint); font-size: 14.5px; line-height: 23.5px; letter-spacing: -.003em; cursor: pointer; }
+.ns-ghost-text:hover { color: var(--color-dim); }
+.ns-ghost-hint { display: flex; align-items: center; gap: 5px; color: var(--color-faint); font-size: 11px; margin-top: 7px; }
+.ns-ghost-hint kbd { font-family: inherit; font-size: 10px; border: 1px solid var(--color-line); border-radius: 4px; padding: 0 4px; line-height: 16px; }
+.ns-ghost-dot { padding: 0 2px; }
+.ns-demo-toast { display: flex; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); align-items: center; gap: 8px; white-space: nowrap; padding: 9px 12px; border-radius: 8px; background: var(--color-raised); border: 1px solid var(--color-line); color: var(--color-dim); font-size: 12px; z-index: 60; }
+.ns-demo-toast button { color: var(--color-brass); cursor: pointer; }
+@media (max-width: 640px) { .ns-panel { padding-left: 14px; padding-right: 14px; } .ns-choice-footer { flex-wrap: wrap; } .ns-row { gap: 9px; } .ns-shelf-wrap { padding: 0 18px; } .ns-number { display: none; } .ns-row-description { font-size: 12px; } .ns-prompt-button { gap: 12px; } }
+@media (prefers-reduced-motion: reduce) { .ns-row { transition: none; } }

@@ -1,0 +1,58 @@
+{
+  "v": 3,
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-10-30T22:23:39.012911+00:00"
+  },
+  "title": "Tack \u00b7 Browser",
+  "launch": {
+    "view": "canvas"
+  },
+  "boards": {
+    "Browser.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1512,
+      "h": 920,
+      "title": "Browser \u00b7 Shared workspace",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Empty.dc.html": {
+      "x": 1592,
+      "y": 0,
+      "w": 1512,
+      "h": 920,
+      "title": "Browser \u00b7 Ready to browse",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Closed.dc.html": {
+      "x": 0,
+      "y": 1040,
+      "w": 1512,
+      "h": 920,
+      "title": "Browser \u00b7 One click away",
+      "expand": "fill",
+      "is_interactive": true
+    },
+    "Compact.dc.html": {
+      "x": 1592,
+      "y": 1040,
+      "w": 1000,
+      "h": 820,
+      "title": "Browser \u00b7 Compact window",
+      "expand": "fill",
+      "is_interactive": true
+    }
+  },
+  "order": [
+    "Browser.dc.html",
+    "Empty.dc.html",
+    "Closed.dc.html",
+    "Compact.dc.html"
+  ],
+  "notes": {},
+  "pages": [],
+  "designSystems": []
+}

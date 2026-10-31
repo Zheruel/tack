@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tack",
+  "version": "0.1.0",
+  "identifier": "dev.tack.app",
+  "build": {
+    "beforeDevCommand": "bunx vite",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bunx vite build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "Tack",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 480,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 25
+        },
+        "backgroundColor": "#1c1a18"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "resources": {
+      "resources/cua-driver/": "cua-driver/",
+      "../node_modules/playwright/": "browser-runtime/node_modules/playwright/",
+      "../node_modules/playwright-core/": "browser-runtime/node_modules/playwright-core/"
+    },
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "externalBin": [
+      "binaries/tack-server"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "14.0"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVENDBCMjA3QTQ4RUM5RkQKUldUOXlZNmtCN0pBWFpxb05iUDFIWUk3aEU1dWZFN2d6K2FPYitYazJ4L2s5WkE5dC9oazJSQ2YK",
+      "endpoints": [
+        "https://github.com/Zheruel/tack/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
