@@ -30,12 +30,26 @@ export function onConnect(fn: () => void) {
   return () => void connectListeners.delete(fn);
 }
 
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 30_000;
+// A connection must stay open this long before the backoff resets, so a server that accepts and then crashes keeps backing off.
+const STABLE_MS = 10_000;
+
+// Exponential backoff with jitter: 500ms doubling up to 30s, each delay randomized into its upper half.
+function reconnectDelay(attempt: number): number {
+  const cap = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** attempt);
+  return cap / 2 + Math.random() * (cap / 2);
+}
+
 export async function connect() {
   const url = await serverUrl();
+  let attempt = 0;
   const open = () => {
     const socket = new WebSocket(url);
+    let stable: ReturnType<typeof setTimeout> | undefined;
     socket.onopen = () => {
       ws = socket;
+      stable = setTimeout(() => (attempt = 0), STABLE_MS);
       for (const fn of connectListeners) fn();
     };
     socket.onmessage = (m) => {
@@ -50,10 +64,11 @@ export async function connect() {
       "error" in frame ? p.reject(new Error(frame.error)) : p.resolve(frame.result);
     };
     socket.onclose = () => {
+      clearTimeout(stable);
       if (ws === socket) ws = undefined;
       for (const p of pending.values()) p.reject(new Error("Disconnected"));
       pending.clear();
-      setTimeout(open, 500);
+      setTimeout(open, reconnectDelay(attempt++));
     };
   };
   open();

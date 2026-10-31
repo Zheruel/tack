@@ -3,35 +3,58 @@ import { useEffect, useRef, useState } from "react";
 import type { Question } from "../../../shared/protocol";
 import { call } from "../rpc";
 import { useApp } from "../store";
+import { isThreadDescendant } from "./Approvals";
 
 // The agent asking before it builds. Docked on top of the composer, one question at a time:
 // 1-4 picks an option, ↵ moves on, Esc skips. The answers go back as your next message, so
 // typing a reply in the composer instead works too.
 export function Questions({ threadId }: { threadId: string }) {
-  const questions = useApp((s) => s.threads[threadId]?.questions);
-  if (!questions?.length) return null;
-  return <Card key={JSON.stringify(questions)} threadId={threadId} questions={questions} />;
+  const target = useApp((s) => {
+    const own = s.threads[threadId];
+    return own?.questions?.length ? own : Object.values(s.threads).find((t) => t.questions?.length && isThreadDescendant(s.threads, t.id, threadId));
+  });
+  const questions = target?.questions;
+  if (!target || !questions?.length) return null;
+  return <Card key={`${target.id}:${JSON.stringify(questions)}`} threadId={target.id} via={target.id === threadId ? undefined : target.title} questions={questions} />;
 }
 
-const send = (threadId: string, text: string) => call("chat.send", { threadId, text, attachments: [] });
+const send = (threadId: string, text: string) => useApp.getState().threads[threadId]?.parentId
+  ? call("agent.answer", { threadId, text })
+  : call("chat.send", { threadId, text, attachments: [] });
 
-function Card({ threadId, questions }: { threadId: string; questions: Question[] }) {
+function Card({ threadId, questions, via }: { threadId: string; questions: Question[]; via?: string }) {
   const [index, setIndex] = useState(0);
   const [picks, setPicks] = useState<string[][]>(() => questions.map(() => []));
   const [typed, setTyped] = useState<string[]>(() => questions.map(() => ""));
   const other = useRef<HTMLInputElement>(null);
+  const submitting = useRef(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
   const q = questions[index]!;
   const last = index === questions.length - 1;
 
   const answerOf = (i: number) => [...picks[i]!, typed[i]!.trim()].filter(Boolean).join(", ");
+  const reply = async (text: string) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    setSending(true);
+    setError("");
+    try { await send(threadId, text); }
+    catch (e) {
+      submitting.current = false;
+      setSending(false);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
   const submit = (finalPicks = picks) => {
     const lines = questions.map((x, i) => `${x.header}: ${[...finalPicks[i]!, typed[i]!.trim()].filter(Boolean).join(", ") || "your call"}`);
-    send(threadId, lines.join("\n"));
+    void reply(lines.join("\n"));
   };
-  const skip = () => send(threadId, "Your call: go with your recommendations.");
+  const skip = () => void reply("Your call: go with your recommendations.");
   const next = (finalPicks = picks) => (last ? submit(finalPicks) : setIndex(index + 1));
 
   const pick = (label: string) => {
+    if (sending) return;
     const updated = picks.map((p, i) =>
       i !== index ? p : q.multiSelect ? (p.includes(label) ? p.filter((l) => l !== label) : [...p, label]) : [label],
     );
@@ -44,7 +67,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (sending || e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
       const inOther = e.target === other.current;
       const typing = !inOther && e.target instanceof HTMLTextAreaElement && e.target.value.trim() !== "";
       if (typing) return;
@@ -62,11 +85,13 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
 
   return (
     <div className="dock-in mb-2 rounded-2xl border border-brass/25 bg-raised px-4 pt-3 pb-3">
+      {via && <p className="mb-1 truncate text-[12px] text-brass">{via} needs an answer</p>}
       <div className="mb-1 flex h-5 items-center gap-1.5 text-[12px] text-faint">
         {questions.length > 1
           ? questions.map((x, i) => (
               <button
                 key={i}
+                disabled={sending}
                 onClick={() => setIndex(i)}
                 className={`flex items-center gap-1 rounded-md px-1.5 py-px transition-colors ${
                   i === index ? "bg-hover text-ink" : "hover:text-dim"
@@ -79,10 +104,11 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
           : <span>{q.header}</span>}
         <button
           onClick={skip}
+          disabled={sending}
           title="Let the agent decide (Esc)"
           className="ml-auto rounded-md px-1.5 py-px hover:bg-hover hover:text-dim"
         >
-          Skip
+          {sending ? "Sending…" : "Skip"}
         </button>
       </div>
       <p className="mb-2 text-[14.5px] leading-snug text-ink">{q.question}</p>
@@ -92,6 +118,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
           return (
             <button
               key={o.label}
+              disabled={sending}
               onClick={() => pick(o.label)}
               className={`group flex w-full items-start gap-3 rounded-lg px-2 py-1.5 text-left transition-colors ${
                 on ? "bg-brass/12" : "hover:bg-hover"
@@ -115,6 +142,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
       <div className="mt-1.5 flex items-center gap-2 pl-2">
         <input
           ref={other}
+          disabled={sending}
           value={typed[index]}
           onChange={(e) => {
             const v = e.target.value;
@@ -126,7 +154,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
         />
         {(q.multiSelect || typed[index]) && (
           <button
-            disabled={!answerOf(index)}
+            disabled={sending || !answerOf(index)}
             onClick={() => next()}
             className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-brass px-2.5 text-[12.5px] font-medium text-brass-ink transition enabled:hover:brightness-110 enabled:active:scale-[0.97] disabled:opacity-40"
           >
@@ -135,6 +163,7 @@ function Card({ threadId, questions }: { threadId: string; questions: Question[]
           </button>
         )}
       </div>
+      {error && <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p>}
     </div>
   );
 }

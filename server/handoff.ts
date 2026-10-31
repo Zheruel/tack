@@ -5,7 +5,7 @@
 // Messages are kept whole (they hold the decisions); tool calls become one line each, with the
 // tail of failed output, since the files themselves are on disk for the new agent to read.
 
-import type { Item, Provider } from "../shared/protocol";
+import { wrapUpOf, type Item, type Provider } from "../shared/protocol";
 
 const BUDGET = 48_000; // characters, roughly 12k tokens
 const FAILED_OUTPUT = 600;
@@ -39,6 +39,7 @@ function render(item: Item): string | undefined {
     case "assistant":
       return `Assistant: ${item.text}`;
     case "tool":
+      if (wrapUpOf(item)) return `Assistant: ${wrapUpOf(item)!.summary}`;
       return `- ${toolLine(item)}${item.status === "error" && item.output ? `\n  failed: ${tail(item.output)}` : ""}`;
     case "error":
       return `Error: ${item.text}`;

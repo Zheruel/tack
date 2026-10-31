@@ -1,22 +1,40 @@
 import { useEffect } from "react";
-import type { ApprovalRequest } from "../../../shared/protocol";
+import type { ApprovalRequest, Thread } from "../../../shared/protocol";
 import { call } from "../rpc";
 import { useApp } from "../store";
+
+// Include nested agents only when their complete parent chain is intact and acyclic.
+export function isThreadDescendant(threads: Record<string, Thread>, id: string, ancestorId: string): boolean {
+  const ancestor = threads[ancestorId];
+  if (!ancestor) return false;
+  const seen = new Set<string>();
+  let current: string | undefined = id;
+  let found = false;
+  while (current) {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const thread: Thread | undefined = threads[current];
+    if (!thread || thread.id !== current || thread.projectId !== ancestor.projectId) return false;
+    if (current === ancestorId) found = true;
+    current = thread.parentId;
+  }
+  return found;
+}
 
 // Docked on top of the composer. One request at a time: ↵ allows, Esc denies.
 export function Approval({ threadId }: { threadId: string }) {
   const all = useApp((s) => s.approvals);
   const threads = useApp((s) => s.threads);
   // A sub-agent's requests show in its parent too, where the user is likely looking.
-  const queue = Object.values(all).filter((a) => a.threadId === threadId || threads[a.threadId]?.parentId === threadId);
+  const queue = Object.values(all).filter((a) => isThreadDescendant(threads, a.threadId, threadId));
   const request = queue[0];
   const via = request && request.threadId !== threadId ? threads[request.threadId]?.title : undefined;
 
   useEffect(() => {
     if (!request) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing || e.metaKey || e.shiftKey || e.altKey) return;
-      const typing = e.target instanceof HTMLTextAreaElement && e.target.value.trim() !== "";
+      if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const typing = e.target instanceof HTMLInputElement || (e.target instanceof HTMLTextAreaElement && e.target.value.trim() !== "") || (e.target instanceof HTMLElement && e.target.isContentEditable);
       if (e.key === "Enter" && !typing) answer(request.id, true);
       else if (e.key === "Escape") answer(request.id, false);
       else return;
@@ -72,6 +90,8 @@ function answer(approvalId: string, allow: boolean) {
 function describe(r: ApprovalRequest): { title: string; body?: string; note?: string } {
   const i = (r.input ?? {}) as Record<string, any>;
   switch (r.tool) {
+    case "BrowserInstall":
+      return { title: "Set up isolated browser", note: "Download Chromium once for browser testing and visual previews. This does not open your Chrome or control your mouse." };
     case "Bash":
       return { title: "Run command", body: `$ ${i.command}`, note: i.description };
     case "Write":

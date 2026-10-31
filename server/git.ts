@@ -28,6 +28,26 @@ export class Git {
     return { branch: branch.trim() || null, changes, pr: branch.trim() ? await this.pr(cwd) : null };
   }
 
+  // Local branches, most recently committed first.
+  async branches(cwd: string): Promise<{ current: string | null; branches: string[] }> {
+    const [current, list] = await Promise.all([
+      this.branch(cwd),
+      this.run(cwd, ["git", "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"]),
+    ]);
+    return { current, branches: (list ?? "").split("\n").filter(Boolean) };
+  }
+
+  // Throws git's own message when the switch is refused, e.g. local changes would be overwritten.
+  async checkout(cwd: string, branch: string): Promise<void> {
+    const proc = Bun.spawn(["git", "switch", "--", branch], { cwd, env: this.env, stdout: "ignore", stderr: "pipe" });
+    const [err, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+    if (code !== 0) throw new Error(err.trim().replace(/^(error|fatal): /, "") || `Couldn't switch to ${branch}`);
+  }
+
+  async branch(cwd: string): Promise<string | null> {
+    return (await this.run(cwd, ["git", "branch", "--show-current"]))?.trim() || null;
+  }
+
   // Fuzzy path match over tracked + untracked files: every query character in order,
   // scored toward matches in the file name and contiguous runs.
   async search(cwd: string, query: string): Promise<string[]> {

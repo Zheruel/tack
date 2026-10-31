@@ -1,4 +1,3 @@
-import { FileText, Folder, Sparkles, SquareSlash } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Command, Provider } from "../../../shared/protocol";
 import { call } from "../rpc";
@@ -9,6 +8,7 @@ export interface Suggestion {
   detail?: string;
   icon: "command" | "skill" | "file" | "folder";
   insert: string; // replaces the typed token
+  source?: "app";
 }
 
 export interface Completion {
@@ -32,14 +32,32 @@ function commands(projectId: string, provider: Provider) {
   return hit;
 }
 
-// "/" at the very start lists commands and skills; "@" after a space lists files.
+// Names of the commands and skills the composer can colour once they are typed in full.
+export function useCommandNames(projectId: string | undefined, provider: Provider) {
+  const [names, setNames] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let live = true;
+    if (!projectId) return setNames(new Set());
+    commands(projectId, provider).then((list) => live && setNames(new Set(list.map((c) => c.name))));
+    return () => void (live = false);
+  }, [projectId, provider]);
+  return names;
+}
+
+// "/" at the start of a word lists commands and skills (a second "/" makes it a path, so no menu);
+// "@" after a space lists files.
 export function useCompletion(text: string, caret: number, projectId: string | undefined, provider: Provider) {
   const [state, setState] = useState<Completion | null>(null);
   const [dismissed, setDismissed] = useState<string | null>(null);
   const seq = useRef(0);
 
+  // The first lookup starts a CLI; warm it while the box is still empty so "/" answers at once.
+  useEffect(() => {
+    if (projectId) void commands(projectId, provider);
+  }, [projectId, provider]);
+
   const before = text.slice(0, caret);
-  const slash = before.match(/^\/([\w:.-]*)$/);
+  const slash = before.match(/(?:^|\s)\/([\w:.-]*)$/);
   const mention = before.match(/(?:^|\s)@([^\s@]*)$/);
   const token = slash ? `/${slash[1]}` : mention ? `@${mention[1]}` : null;
 
@@ -64,6 +82,7 @@ export function useCompletion(text: string, caret: number, projectId: string | u
             detail: c.description,
             icon: c.kind,
             insert: `/${c.name} `,
+            source: c.source,
           })),
         );
       });
@@ -94,7 +113,6 @@ export function useCompletion(text: string, caret: number, projectId: string | u
   };
 }
 
-const ICONS = { command: SquareSlash, skill: Sparkles, file: FileText, folder: Folder };
 
 export function CompletionMenu({
   completion,
@@ -110,31 +128,25 @@ export function CompletionMenu({
     list.current?.children[completion.index]?.scrollIntoView({ block: "nearest" });
   }, [completion.index]);
 
+  // Tucked under the composer card's top edge, as in T3.
   return (
     <div
       ref={list}
       onMouseDown={(e) => e.preventDefault()} // keep focus in the textarea
-      className="dock-in absolute right-0 bottom-full left-0 z-40 mb-2 max-h-[288px] overflow-y-auto rounded-2xl border border-line bg-raised p-1.5 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]"
+      className="composer-attached absolute right-[22px] bottom-[calc(100%-17px)] left-[22px] z-0 max-h-[300px] overflow-y-auto p-2 pb-[25px] select-none"
     >
-      {completion.items.map((s, i) => {
-        const Icon = ICONS[s.icon];
-        return (
-          <div
-            key={s.key}
-            onMouseMove={() => i !== completion.index && onHover(i)}
-            onClick={() => onPick(s)}
-            className={`flex h-9 cursor-default items-center gap-2.5 rounded-xl px-2.5 text-[13px] ${
-              i === completion.index ? "bg-hover text-ink" : "text-dim"
-            }`}
-          >
-            <Icon size={14} className={`shrink-0 ${i === completion.index ? "text-brass" : "text-faint"}`} />
-            <span className={`shrink-0 ${s.icon === "file" || s.icon === "folder" ? "" : "font-mono text-[12.5px]"}`}>
-              {s.label}
-            </span>
-            {s.detail && <span className="min-w-0 truncate text-[12px] text-faint">{s.detail}</span>}
-          </div>
-        );
-      })}
+      {completion.items.map((s, i) => (
+        <div
+          key={s.key}
+          onMouseMove={() => i !== completion.index && onHover(i)}
+          onClick={() => onPick(s)}
+          className={`flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] ${i === completion.index ? "bg-hover" : ""}`}
+        >
+          <span className="max-w-[45%] shrink-0 truncate font-medium text-ink">{s.label}</span>
+          {s.detail && <span className="min-w-0 flex-1 truncate text-faint">{s.detail}</span>}
+          {s.icon === "skill" && <span className="ml-auto shrink-0 rounded bg-ink/[0.07] px-1.5 text-[11px] text-dim">{s.source === "app" ? "App" : "Skill"}</span>}
+        </div>
+      ))}
     </div>
   );
 }

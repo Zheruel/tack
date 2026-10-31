@@ -1,15 +1,16 @@
 // Codex adapter: one `codex app-server` process per active thread, JSON-RPC over stdio
 // (one bare JSON object per line, no "jsonrpc" field). Maps thread items onto Tack items.
 
-import type { Attachment, Command, Effort, Item, ModelOption, Todo } from "../shared/protocol";
-import { agentDescription, ASKED, jsonSchema, systemPrompt, TOOLS, type AgentInput, type AskInput } from "./prompt";
-import type { AgentSession, SessionEvents, SessionOptions } from "./session";
+import type { Attachment, Command, Effort, Item, Limit, ModelOption } from "../shared/protocol";
+import { agentDescription, ASKED, jsonSchema, systemPrompt, TOOLS, type AskInput } from "./prompt";
+import type { AgentSession, SessionEvents, SessionOptions, Steered } from "./session";
+import { z } from "zod";
+import { isSurfaceTool, SURFACE_TOOLS } from "./surfaces";
 
 type Json = any;
 
 // Startup and account chatter we never use.
 const QUIET = [
-  "account/rateLimits/updated",
   "account/updated",
   "mcpServer/startupStatus/updated",
   "hook/started",
@@ -24,7 +25,7 @@ const QUIET = [
 const config = (codexHome: string) => [
   "agents.enabled=false", // sub-agent tools and their instructions
   "tools.experimental_request_user_input.enabled=false", // replaced by Tack's `ask`
-  "tools.update_plan.enabled=true", // shown as the task list
+  "tools.update_plan.enabled=false",
   "include_collaboration_mode_instructions=false",
   "features.goals=false",
   "features.tool_suggest=false",
@@ -35,7 +36,7 @@ const config = (codexHome: string) => [
 ];
 
 // Skills that install other skills, document OpenAI's products or duplicate Tack's own tools.
-const HIDDEN_CODEX_SKILLS = [".system/skill-installer", ".system/skill-creator", ".system/openai-docs", "design"];
+const HIDDEN_CODEX_SKILLS = [".system/skill-installer", ".system/skill-creator", ".system/openai-docs"];
 
 // Plugins Tack threads keep: computer and browser use, and the dev services. Everything else
 // (documents, pages, sites, pets, ...) is switched off, including plugins added later.
@@ -49,13 +50,21 @@ const KEPT_PLUGINS = new Set([
   "linear@openai-curated-remote",
 ]);
 
-// Tack's tools for a Codex thread. A sub-agent gets neither ask nor agent.
+// Child threads can ask and delegate; they report plain-text summaries to their parent.
 function dynamicTools(opts: SessionOptions) {
-  const tool = (name: "ask" | "show" | "agent", description: string) => ({ type: "function", name, description, inputSchema: jsonSchema(name) });
+  const tool = (name: "ask" | "show" | "agent" | "wrap_up" | "agent_status" | "agent_send" | "agent_cancel", description: string) => ({ type: "function", name, description, inputSchema: jsonSchema(name) });
   return [
-    ...(opts.role === "agent" ? [] : [tool("ask", TOOLS.ask.description)]),
-    tool("show", TOOLS.show.description),
-    ...(opts.agentModels?.length ? [tool("agent", agentDescription(opts.agentModels))] : []),
+    tool("ask", TOOLS.ask.description),
+    ...Object.entries(SURFACE_TOOLS).map(([name, definition]) => ({ type: "function", name, description: definition.description, inputSchema: z.toJSONSchema(z.object(definition.input)) })),
+    ...(opts.role === "agent" ? [] : [tool("wrap_up", TOOLS.wrap_up.description)]),
+    ...(opts.agentModels?.length
+      ? [
+          tool("agent", agentDescription(opts.agentModels)),
+          tool("agent_status", TOOLS.agent_status.description),
+          tool("agent_send", TOOLS.agent_send.description),
+          tool("agent_cancel", TOOLS.agent_cancel.description),
+        ]
+      : []),
   ];
 }
 
@@ -71,7 +80,7 @@ class Rpc {
     cwd: string,
     env: Record<string, string>,
     private onNotify: (method: string, params: Json) => void,
-    private onRequest: (method: string, params: Json) => Promise<Json>,
+    private onRequest: (method: string, params: Json, requestId: string | number) => Promise<Json>,
   ) {
     const args = config(env.CODEX_HOME ?? `${env.HOME}/.codex`).flatMap((c) => ["-c", c]);
     this.proc = Bun.spawn([bin, "app-server", ...args], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -115,7 +124,7 @@ class Rpc {
     }
     if (frame.method && frame.id !== undefined) {
       try {
-        this.write({ id: frame.id, result: await this.onRequest(frame.method, frame.params) });
+        this.write({ id: frame.id, result: await this.onRequest(frame.method, frame.params, frame.id) });
       } catch (e) {
         this.write({ id: frame.id, error: { code: -32601, message: e instanceof Error ? e.message : String(e) } });
       }
@@ -125,7 +134,7 @@ class Rpc {
       const p = this.pending.get(frame.id);
       if (!p) return;
       this.pending.delete(frame.id);
-      if (frame.error) p.reject(new Error(frame.error.message ?? "Codex request failed"));
+      if (frame.error) p.reject(Object.assign(new Error(frame.error.message ?? "Codex request failed"), { info: JSON.stringify(frame.error) }));
       else p.resolve(frame.result);
     }
   }
@@ -149,6 +158,7 @@ type Tool = Extract<Item, { kind: "tool" }>;
 
 export class CodexSession implements AgentSession {
   readonly provider = "codex";
+  private requestScope = crypto.randomUUID();
   private rpc: Rpc;
   private init: Promise<void>;
   private thread?: Promise<string>;
@@ -168,7 +178,7 @@ export class CodexSession implements AgentSession {
     this.model = opts.model;
     this.effort = opts.effort;
     if (!opts.bin) throw new Error("`codex` not found on PATH");
-    this.rpc = new Rpc(opts.bin, opts.cwd, opts.env, (m, p) => this.notification(m, p), (m, p) => this.serverRequest(m, p));
+    this.rpc = new Rpc(opts.bin, opts.cwd, opts.env, (m, p) => this.notification(m, p), (m, p, id) => this.serverRequest(m, p, id));
     this.init = this.rpc
       .request("initialize", {
         clientInfo: { name: "tack", title: "Tack", version: "0.1.0" },
@@ -176,6 +186,11 @@ export class CodexSession implements AgentSession {
       })
       .then(() => this.rpc.notify("initialized"));
     this.init.catch(() => {});
+    // Plan limits before the first turn; later changes arrive as notifications.
+    this.init
+      .then(() => this.rpc.request("account/rateLimits/read", {}))
+      .then((r: Json) => this.events.limits(codexLimits(r?.rateLimits)))
+      .catch(() => {});
     this.rpc.exited.then((error) => {
       const wasClosed = this.closed;
       this.closed = true;
@@ -195,9 +210,28 @@ export class CodexSession implements AgentSession {
 
   async interrupt() {
     this.interrupted = true;
-    if (!this.thread || !this.turnId) return;
+    const turnId = this.turnId;
+    if (!this.thread || !turnId) return;
     const threadId = await this.thread;
-    await this.rpc.request("turn/interrupt", { threadId, turnId: this.turnId }).catch(() => {});
+    if (this.turnId !== turnId) return;
+    await this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+  }
+
+  // Adds input to the active turn. Codex refuses when the turn is a review or compaction, or has just ended.
+  async steer(text: string, attachments: Attachment[]): Promise<Steered> {
+    const turnId = this.turnId;
+    if (!this.thread || !turnId || this.interrupted || this.closed) return "queue";
+    const threadId = await this.thread;
+    if (this.turnId !== turnId || this.interrupted || this.closed) return "queue";
+    const input: Json[] = [{ type: "text", text, text_elements: [] }];
+    for (const a of attachments) if (a.kind === "image") input.push({ type: "image", url: `data:${a.mediaType};base64,${a.data}` });
+    return this.rpc.request("turn/steer", { threadId, expectedTurnId: turnId, input }).then(
+      (): Steered => "sent",
+      (error): Steered => {
+        console.warn("tack: Codex steer deferred:", error instanceof Error ? error.message : error);
+        return "queue";
+      },
+    );
   }
 
   async setModel(model: string) {
@@ -292,24 +326,34 @@ export class CodexSession implements AgentSession {
     }
     input.unshift({ type: "text", text, text_elements: [] });
     const { approvalPolicy, sandboxPolicy } = this.policy();
+    const disabledPluginIds = await this.pluginsToDisable();
+    if (this.closed) return;
+    if (this.interrupted) {
+      this.events.turnEnd();
+      return;
+    }
     this.approvals = new AbortController();
-    const { turn } = await this.rpc.request("turn/start", {
+    // Notifications own the active id. A late reply must not revive a turn that already ended.
+    await this.rpc.request("turn/start", {
       threadId,
       input,
       model: this.model,
       effort: this.effort,
       approvalPolicy,
-      disabledPluginIds: await this.pluginsToDisable(),
+      disabledPluginIds,
       ...(sandboxPolicy ? { sandboxPolicy } : {}),
     });
-    this.turnId = turn.id;
   }
 
   private notification(method: string, p: Json) {
     switch (method) {
-      case "turn/started":
+      case "turn/started": {
+        const started = this.turnId !== p.turn.id;
         this.turnId = p.turn.id;
+        if (started) this.events.turnStart?.();
+        if (this.interrupted) void this.interrupt(); // Stop may arrive before the native turn exists
         return;
+      }
       case "item/started": {
         const item = toItem(p.item, false);
         if (!item) return;
@@ -331,17 +375,12 @@ export class CodexSession implements AgentSession {
         const item = toItem(p.item, true);
         this.open.delete(p.item.id);
         this.shown.delete(p.item.id);
-        if (!item || (item.kind === "thinking" && !item.text.trim())) return;
+        if (!item || ((item.kind === "thinking" || item.kind === "assistant") && !item.text.trim())) return;
         this.events.item(item, true);
         return;
       }
-      case "turn/plan/updated":
-        return this.events.todo(
-          (p.plan as Json[]).map((s): Todo => ({
-            content: s.step,
-            status: s.status === "inProgress" ? "in_progress" : s.status,
-          })),
-        );
+      case "account/rateLimits/updated":
+        return this.events.limits(codexLimits(p.rateLimits));
       case "thread/tokenUsage/updated": {
         const u = p.tokenUsage;
         if (u?.modelContextWindow) this.events.usage(u.last?.totalTokens ?? 0, u.modelContextWindow);
@@ -380,7 +419,7 @@ export class CodexSession implements AgentSession {
     this.events.item({ ...item }, false);
   }
 
-  private async serverRequest(method: string, p: Json): Promise<Json> {
+  private async serverRequest(method: string, p: Json, requestId?: string | number): Promise<Json> {
     const ask = (tool: string, input: unknown) => this.events.approve(tool, input, this.approvals.signal);
     switch (method) {
       case "item/commandExecution/requestApproval": {
@@ -398,8 +437,17 @@ export class CodexSession implements AgentSession {
           this.events.ask((p.arguments as AskInput).questions);
           return text(ASKED);
         }
-        if (p.tool === "show") return text("Shown to the user above your reply.");
-        if (p.tool === "agent") return text(this.events.agent(p.arguments as AgentInput));
+        if (isSurfaceTool(p.tool)) {
+          const result = await this.events.surface(p.tool, p.arguments, this.approvals.signal);
+          return {
+            contentItems: result.content.map((part) => part.type === "text" ? { type: "inputText", text: part.text } : { type: "inputImage", imageUrl: `data:${part.mimeType};base64,${part.data}` }),
+            success: !result.isError,
+          };
+        }
+        if (p.tool === "wrap_up") return text("Shown to the user.");
+        if (p.tool === "agent" || p.tool === "agent_status" || p.tool === "agent_send" || p.tool === "agent_cancel")
+          return text(await this.events.agent(p.tool, p.arguments, this.approvals.signal,
+            `${this.requestScope}:${p.callId ?? p.toolCallId ?? requestId ?? crypto.randomUUID()}`));
         return { contentItems: [{ type: "inputText", text: `Unknown tool ${p.tool}` }], success: false };
       }
       default:
@@ -422,6 +470,18 @@ export class CodexSession implements AgentSession {
 
 // Tool output kept for display only; the model already has the full result.
 const MAX_OUTPUT = 20_000;
+
+// Codex reports a short window and a long one; resetsAt is in seconds.
+function codexLimits(snapshot: Json): Limit[] {
+  const out: Limit[] = [];
+  for (const [kind, w] of [["primary", snapshot?.primary], ["secondary", snapshot?.secondary]] as const) {
+    if (!w || typeof w.usedPercent !== "number") continue;
+    const mins = w.windowDurationMins as number | null;
+    const label = mins === 10080 ? "Weekly limit" : mins && mins % 60 === 0 ? `${mins / 60}-hour limit` : kind === "primary" ? "Short-term limit" : "Long-term limit";
+    out.push({ kind, label, percent: w.usedPercent, resetsAt: w.resetsAt ? w.resetsAt * 1000 : undefined });
+  }
+  return out;
+}
 const EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max", "ultra"]);
 const isEffort = (e: string): e is Effort => EFFORTS.has(e);
 

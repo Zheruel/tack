@@ -1,12 +1,14 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ArrowUp, Check, ChevronDown, ChevronRight, Image as ImageIcon, Paperclip, ShieldCheck, ShieldOff, Square, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import * as Popover from "@radix-ui/react-popover";
+import { ArrowUp, Check, CornerUpRight, Folder, GitBranch, GitFork, ListPlus, Paperclip, Search, ShieldCheck, ShieldOff, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_EFFORT, type Access, type Attachment, type Effort, type Provider } from "../../../shared/protocol";
 import { onFileDrop } from "../native";
 import { call } from "../rpc";
 import { sendDraft, updateDraft, useApp } from "../store";
 import { Approval } from "./Approvals";
-import { CompletionMenu, useCompletion, type Suggestion } from "./Autocomplete";
+import { CompletionMenu, useCommandNames, useCompletion, type Suggestion } from "./Autocomplete";
+import { PROVIDER_NAMES } from "./Logos";
 import { ModelPicker } from "./ModelPicker";
 import { Questions } from "./Questions";
 
@@ -24,6 +26,7 @@ interface Config {
 export function Composer({ threadId }: { threadId?: string }) {
   const thread = useApp((s) => (threadId ? s.threads[threadId] : undefined));
   const draft = useApp((s) => s.draft);
+  const composerRequest = useApp((s) => s.composerRequest);
   const config: Config | undefined = thread ?? draft;
   const key = threadId ?? DRAFT;
   const [text, setText] = useState(() => drafts.get(key) ?? "");
@@ -32,12 +35,32 @@ export function Composer({ threadId }: { threadId?: string }) {
   const input = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const running = thread?.status === "running";
+  // A queued message being rewritten in the composer; the draft it displaced comes back afterwards.
+  const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
   const [caret, setCaret] = useState(0);
   const provider: Provider = useApp((s) => s.models.find((m) => m.value === config?.model)?.provider ?? thread?.provider ?? "claude");
   const projectId = thread?.projectId ?? draft?.projectId;
   const { completion, move, dismiss, setIndex } = useCompletion(text, caret, projectId, provider);
+  const commandNames = useCommandNames(projectId, provider);
+  const mirror = useRef<HTMLDivElement>(null);
+
+  // Holding ⌘ turns the steer button into a queue button, since ⌘↵ queues.
+  const [queueKey, setQueueKey] = useState(false);
+  useEffect(() => {
+    const track = (e: KeyboardEvent) => setQueueKey(e.metaKey);
+    const clear = () => setQueueKey(false);
+    window.addEventListener("keydown", track);
+    window.addEventListener("keyup", track);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", track);
+      window.removeEventListener("keyup", track);
+      window.removeEventListener("blur", clear);
+    };
+  }, []);
 
   useEffect(() => {
+    setEditing(null);
     setText(drafts.get(key) ?? "");
     setAttachments([]);
     input.current?.focus();
@@ -52,6 +75,28 @@ export function Composer({ threadId }: { threadId?: string }) {
   }, [text, key]);
 
   useEffect(() => {
+    if (!composerRequest || composerRequest.threadId !== threadId || !config) return;
+    if (useApp.getState().composerRequest !== composerRequest) return;
+    const message = composerRequest.text;
+    const requestedAttachments = composerRequest.attachments;
+    if (requestedAttachments?.length) setAttachments((current) => [...current, ...requestedAttachments]);
+    setText((current) => {
+      const draft = current.trimEnd();
+      if (!draft.trim()) return message;
+      return draft === message || draft.endsWith(`\n\n${message}`) ? current : `${draft}\n\n${message}`;
+    });
+    dismiss();
+    useApp.setState({ composerRequest: undefined });
+    requestAnimationFrame(() => {
+      const el = input.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      setCaret(el.value.length);
+    });
+  }, [composerRequest, threadId, config, dismiss]);
+
+  useEffect(() => {
     let off = () => {};
     onFileDrop((paths) =>
       setAttachments((a) => [...a, ...paths.map((path) => ({ kind: "path" as const, name: path.split("/").pop()!, path }))]),
@@ -64,13 +109,32 @@ export function Composer({ threadId }: { threadId?: string }) {
   const configure = (patch: Partial<Config>) =>
     threadId ? call("thread.configure", { threadId, ...patch }) : updateDraft(patch);
 
-  const send = async (steer = false) => {
+  // Sending while the agent works steers it by default; `queue` holds the message until the turn ends.
+  const edit = (id: string) => {
+    const q = useApp.getState().queues[threadId!]?.find((m) => m.id === id);
+    if (!q || q.agents) return;
+    setEditing((e) => e ?? { id, draft: text });
+    setText(q.text);
+    requestAnimationFrame(() => input.current?.focus());
+  };
+  const stopEditing = () => {
+    if (!editing) return;
+    setText(editing.draft);
+    setEditing(null);
+  };
+
+  const send = async (queue = false) => {
     const body = text.trim();
+    if (editing && threadId) {
+      if (!body) return;
+      await call("chat.edit", { threadId, queuedId: editing.id, text: body });
+      return stopEditing();
+    }
     if ((!body && !attachments.length) || sending) return;
     setText("");
     setAttachments([]);
     drafts.delete(key);
-    if (threadId) return call("chat.send", { threadId, text: body, attachments, steer });
+    if (threadId) return call("chat.send", { threadId, text: body, attachments, steer: !queue });
     setSending(true);
     try {
       await sendDraft(body, attachments);
@@ -98,7 +162,10 @@ export function Composer({ threadId }: { threadId?: string }) {
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (completion && !e.nativeEvent.isComposing) {
+    // A fully typed "/command" sends on Enter, as in Claude Code, rather than completing itself again.
+    const picked = completion?.items[completion.index];
+    const typedInFull = !!completion && !!picked?.label.startsWith("/") && picked.insert.trimEnd() === text.slice(completion.start, completion.end);
+    if (completion && !e.nativeEvent.isComposing && !(e.key === "Enter" && typedInFull)) {
       const keys: Record<string, () => void> = {
         ArrowDown: () => move(1),
         ArrowUp: () => move(-1),
@@ -111,9 +178,20 @@ export function Composer({ threadId }: { threadId?: string }) {
         return keys[e.key]!();
       }
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    const queue = threadId ? useApp.getState().queues[threadId]?.filter((m) => !m.agents) ?? [] : [];
+    if (e.key === "Enter" && e.metaKey && e.shiftKey && !e.nativeEvent.isComposing) {
+      // Sends the oldest queued message as a steer and leaves the draft alone.
+      e.preventDefault();
+      if (queue[0]) call("chat.steer", { threadId: threadId!, queuedId: queue[0].id });
+    } else if (e.key === "ArrowUp" && e.altKey && !editing && queue.length && input.current?.selectionStart === 0 && input.current.selectionEnd === 0) {
+      e.preventDefault();
+      edit(queue[queue.length - 1]!.id);
+    } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       send(e.metaKey);
+    } else if (e.key === "Escape" && editing) {
+      e.preventDefault();
+      stopEditing();
     } else if (e.key === "Escape" && running) {
       e.preventDefault();
       call("chat.interrupt", { threadId: threadId! });
@@ -121,121 +199,186 @@ export function Composer({ threadId }: { threadId?: string }) {
   };
 
   const empty = !text.trim() && !attachments.length;
+  const stopping = running && empty;
 
   return (
-    <div className="mx-auto w-full max-w-[768px] px-8 pb-6">
+    <div className="thread-composer mx-auto w-full max-w-[768px] px-8 pb-4">
       {threadId && <Questions threadId={threadId} />}
       {threadId && <Approval threadId={threadId} />}
-      {threadId && <Queue threadId={threadId} />}
-      <div
-        onClick={() => input.current?.focus()}
-        className="relative rounded-[20px] border border-line bg-raised shadow-[0_10px_40px_-16px_rgba(0,0,0,0.7)]"
-      >
+      {threadId && <Queue threadId={threadId} editing={editing?.id} onEdit={edit} />}
+      {editing && <div className="px-1 pb-1.5 text-[12px] text-faint">Editing a queued message. ↵ saves, Esc cancels.</div>}
+      <div className="relative">
         {completion && <CompletionMenu completion={completion} onPick={pick} onHover={setIndex} />}
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 px-3.5 pt-3.5">
-            {attachments.map((a, i) => (
-              <span key={i} className="flex items-center gap-1.5 rounded-lg bg-hover py-1 pr-1 pl-2 text-[12px] text-dim">
-                {a.kind === "image" ? <ImageIcon size={12} /> : <Paperclip size={12} />}
-                <span className="max-w-48 truncate">{a.name}</span>
-                <button
-                  onClick={() => setAttachments((all) => all.filter((_, j) => j !== i))}
-                  className="rounded p-0.5 hover:text-ink"
-                >
-                  <X size={11} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <textarea
-          ref={input}
-          value={text}
-          rows={1}
-          autoFocus
-          onChange={(e) => {
-            setText(e.target.value);
-            setCaret(e.target.selectionStart);
-          }}
-          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-          onKeyDown={onKeyDown}
-          onPaste={(e) => {
-            if (e.clipboardData.files.length) {
-              e.preventDefault();
-              addImages(e.clipboardData.files);
-            }
-          }}
-          placeholder={running ? "Queue a follow-up. ⌘↵ sends it now" : threadId ? "Reply" : "What should we work on?"}
-          className="block max-h-[360px] min-h-[52px] w-full resize-none bg-transparent px-[18px] pt-4 pb-1 text-[14.5px] leading-[1.6] tracking-[-0.003em] text-ink placeholder:text-faint focus:outline-none"
-        />
-        <div className="flex items-center gap-0.5 px-2.5 pb-2.5">
-          <button
-            onClick={() => fileInput.current?.click()}
-            title="Attach images"
-            className="rounded-lg p-1.5 text-faint hover:bg-hover hover:text-ink"
-          >
-            <Paperclip size={15} strokeWidth={1.75} />
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/*"
-            multiple
-            hidden
-            onChange={(e) => {
-              if (e.target.files) addImages(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <ModelChoice config={config} onPick={configure} />
-          <EffortPicker config={config} onPick={configure} />
-          <AccessPicker config={config} onPick={configure} />
-          <div className="flex-1" />
-          {thread?.context && <ContextRing used={thread.context.used} window={thread.context.window} />}
-          {running && (
-            <button
-              onClick={() => call("chat.interrupt", { threadId: threadId! })}
-              title="Stop (Esc)"
-              className="mr-1 flex size-8 items-center justify-center rounded-full border border-line text-dim hover:text-ink"
-            >
-              <Square size={11} fill="currentColor" />
-            </button>
+        <div
+          // Portaled menus bubble clicks through React; refocusing then dismisses them.
+          onClick={(e) => e.currentTarget.contains(e.target as Node) && input.current?.focus()}
+          className="composer-card relative z-10 rounded-2xl"
+        >
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-4 pt-3.5">
+              {attachments.map((a, i) => (
+                <span key={i} className="group relative">
+                  {a.kind === "image" ? (
+                    <img
+                      src={`data:${a.mediaType};base64,${a.data}`}
+                      alt={a.name}
+                      title={a.name}
+                      className="size-16 rounded-lg object-cover shadow-[inset_0_0_0_1px_rgb(255_255_255/8%)]"
+                    />
+                  ) : (
+                    <span className="flex h-7 items-center gap-1.5 rounded-lg bg-ink/[0.07] pr-6 pl-2 text-[12.5px] text-dim">
+                      <Paperclip size={12} />
+                      <span className="max-w-48 truncate">{a.name}</span>
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setAttachments((all) => all.filter((_, j) => j !== i))}
+                    title="Remove"
+                    className={`absolute flex size-5 items-center justify-center rounded-full text-dim hover:text-ink ${
+                      a.kind === "image" ? "-top-1.5 -right-1.5 bg-raised opacity-0 shadow group-hover:opacity-100" : "top-1 right-1"
+                    }`}
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
-          <button
-            onClick={() => send()}
-            disabled={empty || sending}
-            title={running ? "Queue (↵)" : "Send (↵)"}
-            className="flex size-8 items-center justify-center rounded-full bg-brass text-brass-ink transition hover:brightness-110 disabled:bg-hover disabled:text-faint"
-          >
-            <ArrowUp size={16} strokeWidth={2.25} />
-          </button>
+          <div className="relative px-4 pt-3.5 pb-1">
+            {/* The text is drawn here so typed /commands and @files can be coloured; the textarea above it stays transparent but takes the typing. */}
+            <div
+              ref={mirror}
+              aria-hidden
+              className="pointer-events-none absolute inset-x-4 top-3.5 bottom-1 overflow-hidden text-[14.5px] leading-[1.625] tracking-[-0.003em] break-words whitespace-pre-wrap text-ink [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            >
+              {highlightCommands(text, commandNames)}
+              {"\n"}
+            </div>
+            <textarea
+              ref={input}
+              aria-label={threadId ? "Message" : "New message"}
+              value={text}
+              rows={2}
+              autoFocus
+              onChange={(e) => {
+                setText(e.target.value);
+                setCaret(e.target.selectionStart);
+              }}
+              onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+              onKeyDown={onKeyDown}
+              onScroll={(e) => mirror.current && (mirror.current.scrollTop = e.currentTarget.scrollTop)}
+              onPaste={(e) => {
+                if (e.clipboardData.files.length) {
+                  e.preventDefault();
+                  addImages(e.clipboardData.files);
+                }
+              }}
+              placeholder={running ? "Steer the agent. ⌘↵ queues it for after. ⌥↑ edits the last queued" : threadId ? "Reply" : "Ask anything. @ files, / commands"}
+              className="block max-h-[300px] min-h-[47px] w-full resize-none bg-transparent p-0 text-[14.5px] leading-[1.625] tracking-[-0.003em] text-transparent caret-ink placeholder:text-faint focus:outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            />
+          </div>
+          <div className="composer-controls flex items-center gap-1 px-2 pb-2">
+            <button
+              onClick={() => fileInput.current?.click()}
+              title="Attach images"
+              aria-label="Attach images"
+              className="flex size-7 items-center justify-center rounded-lg text-faint transition-colors hover:bg-hover hover:text-ink"
+            >
+              <Paperclip size={15} strokeWidth={1.75} />
+            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files) addImages(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <div className="flex-1" />
+            <ModelChoice config={config} onPick={configure} />
+            <EffortPicker config={config} onPick={configure} />
+            <ContextMeter context={thread?.context} provider={provider} />
+            {/* One button: stop while the agent works and the box is empty, send otherwise. */}
+            {stopping ? (
+              <button
+                onClick={() => call("chat.interrupt", { threadId: threadId! })}
+                title="Stop (Esc)"
+                aria-label="Stop"
+                className="ml-1 flex size-8 cursor-pointer items-center justify-center rounded-full bg-danger/90 text-white transition duration-150 hover:scale-105 hover:bg-danger"
+              >
+                <svg viewBox="0 0 8 8" className="size-2">
+                  <rect width="8" height="8" rx="1.5" fill="currentColor" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                onClick={(e) => send(e.metaKey)}
+                disabled={empty || sending}
+                title={running ? "Steer (↵) · Queue (⌘↵)" : "Send (↵)"}
+                aria-label={running ? (queueKey ? "Queue" : "Steer") : "Send"}
+                className="ml-1 flex size-8 cursor-pointer items-center justify-center rounded-full bg-brass text-brass-ink transition duration-150 hover:scale-105 hover:brightness-110 disabled:cursor-default disabled:bg-ink/[0.12] disabled:text-faint disabled:hover:scale-100 disabled:hover:brightness-100"
+              >
+                {running ? queueKey ? <ListPlus size={16} strokeWidth={2.25} /> : <CornerUpRight size={16} strokeWidth={2.25} /> : <ArrowUp size={16} strokeWidth={2.25} />}
+              </button>
+            )}
+          </div>
         </div>
+      </div>
+      <div className="flex items-center gap-0.5 px-1.5 pt-1.5">
+        <WorkspaceMenu />
+        {projectId && <BranchPicker projectId={projectId} />}
+        <div className="flex-1" />
+        <AccessMenu config={config} onPick={configure} />
       </div>
     </div>
   );
 }
 
-function Queue({ threadId }: { threadId: string }) {
-  const queue = useApp((s) => s.queues[threadId]);
+function Queue({ threadId, editing, onEdit }: { threadId: string; editing?: string; onEdit: (id: string) => void }) {
+  const all = useApp((s) => s.queues[threadId]);
+  const held = useApp((s) => s.held[threadId]);
+  // Sub-agent reports wait their turn quietly; only what you queued shows.
+  const queue = useMemo(() => all?.filter((q) => !q.agents), [all]);
   if (!queue?.length) return null;
   return (
-    <div className="mb-2 flex flex-col gap-1.5">
+    <div className="flex flex-col items-end gap-2 pb-3">
+      {held && (
+        <div className="flex items-center gap-2 text-[12px] text-faint">
+          Stopped. Queued messages are paused.
+          <button onClick={() => call("chat.resume", { threadId })} className="rounded-md px-1.5 py-0.5 text-dim hover:bg-hover hover:text-ink">
+            Resume
+          </button>
+        </div>
+      )}
       {queue.map((q) => (
-        <div key={q.id} className="flex items-center gap-3 rounded-2xl border border-line/80 bg-canvas px-4 py-2.5 text-[13.5px]">
-          <span className="shrink-0 text-[12px] text-faint">Queued</span>
-          <span className="min-w-0 flex-1 truncate text-dim">{q.text || `${q.attachments.length} attachment(s)`}</span>
+        <div
+          key={q.id}
+          className={`flex max-w-[80%] items-center gap-1.5 rounded-2xl border border-dashed py-1.5 pr-1.5 pl-3 text-[13.5px] text-dim ${q.id === editing ? "border-brass/70" : "border-faint/45"}`}
+        >
+          <span className="shrink-0 text-[11.5px] text-faint">Next</span>
+          <span
+            onClick={() => onEdit(q.id)}
+            title="Edit"
+            className="min-w-0 cursor-text truncate"
+          >
+            {q.text || `${q.attachments.length} attachment(s)`}
+          </span>
           <button
             onClick={() => call("chat.steer", { threadId, queuedId: q.id })}
-            className="shrink-0 rounded-lg px-2 py-0.5 text-[12.5px] text-dim hover:bg-hover hover:text-ink"
+            className="h-[22px] shrink-0 rounded-md px-1.5 text-[12px] text-faint hover:bg-hover hover:text-ink"
           >
             Send now
           </button>
           <button
             onClick={() => call("chat.unqueue", { threadId, queuedId: q.id })}
             title="Remove"
-            className="shrink-0 rounded-md p-1 text-faint hover:text-ink"
+            aria-label="Remove"
+            className="flex size-[22px] shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-ink"
           >
-            <X size={13} />
+            <X size={12} />
           </button>
         </div>
       ))}
@@ -243,14 +386,24 @@ function Queue({ threadId }: { threadId: string }) {
   );
 }
 
-export function MenuContent({ children, side = "top" }: { children: React.ReactNode; side?: "top" | "bottom" }) {
+export function MenuContent({
+  children,
+  side = "top",
+  align = "start",
+  className = "min-w-56",
+}: {
+  children: React.ReactNode;
+  side?: "top" | "bottom";
+  align?: "start" | "end";
+  className?: string;
+}) {
   return (
     <Menu.Portal>
       <Menu.Content
         side={side}
-        align="start"
+        align={align}
         sideOffset={8}
-        className="z-50 max-h-[60vh] min-w-56 overflow-y-auto rounded-2xl border border-line bg-raised p-1.5 shadow-[0_16px_50px_-10px_rgba(0,0,0,0.75)]"
+        className={`menu-glass z-50 max-h-[60vh] overflow-y-auto p-1 outline-none select-none ${className}`}
       >
         {children}
       </Menu.Content>
@@ -262,36 +415,202 @@ export function MenuItem({
   selected,
   label,
   hint,
+  icon,
+  badge,
+  disabled,
   onSelect,
 }: {
   selected?: boolean;
   label: React.ReactNode;
   hint?: string;
+  icon?: React.ReactNode;
+  badge?: string;
+  disabled?: boolean;
   onSelect: () => void;
 }) {
   return (
     <Menu.Item
       onSelect={onSelect}
-      className="flex cursor-default items-start gap-2 rounded-xl px-2.5 py-1.5 text-[13px] text-ink outline-none data-highlighted:bg-hover"
+      disabled={disabled}
+      className={`flex min-h-7 cursor-default items-center gap-2 rounded-md px-2 py-1 text-[13.5px] text-ink outline-none data-disabled:text-faint data-highlighted:bg-ink/[0.08] ${
+        selected ? "bg-ink/[0.08]" : ""
+      }`}
     >
+      {icon && <span className="flex shrink-0 text-faint">{icon}</span>}
       <span className="min-w-0 flex-1">
-        <span className="block">{label}</span>
-        {hint && <span className="block max-w-72 truncate text-[11.5px] text-faint">{hint}</span>}
+        <span className="flex items-baseline gap-1.5">
+          {label}
+          {badge && <span className="text-[11.5px] text-faint">{badge}</span>}
+        </span>
+        {hint && <span className="block max-w-72 truncate text-[11.5px] leading-snug text-faint">{hint}</span>}
       </span>
-      <span className="mt-0.5 w-3.5 shrink-0">{selected && <Check size={13} className="text-brass" />}</span>
+      <Check size={14} className={`shrink-0 ${selected ? "" : "invisible"}`} />
     </Menu.Item>
   );
 }
 
-function Trigger({ children, title }: { children: React.ReactNode; title: string }) {
+function MenuLabel({ children }: { children: React.ReactNode }) {
+  return <Menu.Label className="px-2 pt-1.5 pb-1 text-[11.5px] font-medium text-faint">{children}</Menu.Label>;
+}
+
+// The quiet buttons under the card: where the agent works and how much it may do.
+const under =
+  "flex h-6 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-faint outline-none transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-hover data-[state=open]:text-ink";
+
+function WorkspaceMenu() {
   return (
-    <Menu.Trigger
-      title={title}
-      className="flex h-[30px] items-center gap-1.5 rounded-[10px] px-2.5 text-[13px] text-ink/80 outline-none transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-hover data-[state=open]:text-ink"
-    >
-      {children}
-      <ChevronDown size={13} className="text-faint" />
-    </Menu.Trigger>
+    <Menu.Root>
+      <Menu.Trigger className={under}>
+        <Folder size={13} strokeWidth={1.75} />
+        Current checkout
+      </Menu.Trigger>
+      <MenuContent className="w-60">
+        <MenuLabel>Workspace</MenuLabel>
+        <MenuItem selected label="Current checkout" onSelect={() => {}} />
+        <MenuItem disabled label="New worktree" badge="Soon" icon={<GitFork size={14} />} onSelect={() => {}} />
+      </MenuContent>
+    </Menu.Root>
+  );
+}
+
+// Switches the project's checkout. Git refuses when local changes would be lost; its message shows here.
+function BranchPicker({ projectId }: { projectId: string }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<{ current: string | null; branches: string[] }>({ current: null, branches: [] });
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+  const [active, setActive] = useState(0);
+
+  const load = () => call("git.branches", { projectId }).then(setState, () => {});
+  useEffect(() => {
+    load();
+  }, [projectId]);
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setError("");
+    load();
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const shown = state.branches.filter((b) => b.toLowerCase().includes(q));
+  useEffect(() => setActive(0), [q]);
+
+  const pick = async (branch: string) => {
+    if (branch === state.current) return setOpen(false);
+    try {
+      await call("git.checkout", { projectId, branch });
+      setState((s) => ({ ...s, current: branch }));
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  if (!state.current && !state.branches.length) return null;
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger className={under}>
+        <GitBranch size={13} strokeWidth={1.75} />
+        <span className="max-w-48 truncate">{state.current ?? "Detached"}</span>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          align="start"
+          sideOffset={8}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const by = e.key === "ArrowDown" ? 1 : -1;
+              setActive((i) => (i + by + shown.length) % Math.max(shown.length, 1));
+            } else if (e.key === "Enter" && shown[active]) {
+              e.preventDefault();
+              pick(shown[active]!);
+            }
+          }}
+          className="menu-glass z-50 flex max-h-[320px] w-64 flex-col p-1 outline-none select-none"
+        >
+          <label className="mx-1.5 mt-1 mb-1 flex items-center gap-1.5 border-b border-white/[0.08] pb-1.5 transition-colors focus-within:border-brass">
+            <Search size={14} className="shrink-0 text-faint" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search branches"
+              className="h-6 min-w-0 flex-1 bg-transparent text-[13.5px] text-ink outline-none placeholder:text-faint"
+            />
+          </label>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {shown.map((b, i) => (
+              <div
+                key={b}
+                onMouseMove={() => i !== active && setActive(i)}
+                onClick={() => pick(b)}
+                className={`flex min-h-7 cursor-default items-center gap-2 rounded-md px-2 py-1 text-[13.5px] text-ink ${i === active ? "bg-ink/[0.08]" : ""}`}
+              >
+                <span className="min-w-0 flex-1 truncate">{b}</span>
+                <Check size={14} className={`shrink-0 ${b === state.current ? "" : "invisible"}`} />
+              </div>
+            ))}
+            {!shown.length && <p className="px-2 py-2 text-[12.5px] text-faint">No branches found</p>}
+          </div>
+          {error && <p className="mx-1 mt-1 rounded-md bg-danger/10 px-2 py-1.5 text-[12px] leading-snug text-danger">{error}</p>}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+const ACCESS: Record<Access, { label: string; hint: string; Icon: typeof ShieldOff }> = {
+  ask: { label: "Ask first", hint: "Approve commands and edits before they run.", Icon: ShieldCheck },
+  full: { label: "Full access", hint: "Allow commands and edits without prompts.", Icon: ShieldOff },
+};
+
+// T3's segmented permissions control, with the chosen mode spelled out below it.
+function Permissions({ access, onPick }: { access: Access; onPick: (a: Access) => void }) {
+  return (
+    <>
+      <MenuLabel>Permissions</MenuLabel>
+      <div className="mx-2 my-0.5 flex gap-0.5 rounded-lg bg-black/20 p-0.5">
+        {(Object.keys(ACCESS) as Access[]).map((a) => {
+          const { Icon, label } = ACCESS[a];
+          return (
+            <button
+              key={a}
+              title={label}
+              aria-label={label}
+              aria-pressed={a === access}
+              onClick={() => onPick(a)}
+              className={`flex h-6 flex-1 items-center justify-center rounded-md transition-colors ${
+                a === access ? "bg-ink/[0.13] text-ink" : "text-faint hover:bg-hover hover:text-ink"
+              }`}
+            >
+              <Icon size={14} strokeWidth={1.75} />
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex min-h-[52px] flex-col gap-0.5 px-2 py-1.5">
+        <span className="text-[13px] font-medium text-ink">{ACCESS[access].label}</span>
+        <span className="text-[11.5px] leading-snug text-faint">{ACCESS[access].hint}</span>
+      </div>
+    </>
+  );
+}
+
+function AccessMenu({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
+  const { Icon, label } = ACCESS[config.access];
+  return (
+    <Menu.Root>
+      <Menu.Trigger className={under} title="Permissions">
+        <Icon size={13} strokeWidth={1.75} />
+        {label}
+      </Menu.Trigger>
+      <MenuContent align="end" className="w-72">
+        <Permissions access={config.access} onPick={(access) => onPick({ access })} />
+      </MenuContent>
+    </Menu.Root>
   );
 }
 
@@ -309,118 +628,139 @@ function ModelChoice({ config, onPick }: { config: Config; onPick: (p: Partial<C
   );
 }
 
-// How full the model's context is. Fills brass, warms toward red near the limit.
-function ContextRing({ used, window }: { used: number; window: number }) {
-  const pct = Math.min(1, used / window);
+// How full the model's context is. Hovering shows the numbers and the provider's plan limits.
+function ContextMeter({ context, provider }: { context?: { used: number; window: number }; provider: Provider }) {
+  const limits = useApp((s) => s.limits[provider]) ?? [];
+  const [open, setOpen] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const hover = (next: boolean) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOpen(next), next ? 120 : 160);
+  };
+  const pct = context ? Math.min(1, context.used / context.window) : 0;
   const r = 6.5;
   const c = 2 * Math.PI * r;
-  const color = pct > 0.85 ? "var(--color-danger)" : pct > 0.6 ? "#d9a35b" : "var(--color-brass)";
   return (
-    <span
-      title={`Context: ${tokens(used)} of ${tokens(window)} tokens (${Math.round(pct * 100)}%)`}
-      className="mr-2 flex items-center gap-1.5 text-[11.5px] text-faint tabular-nums"
-    >
-      <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
-        <circle cx="8" cy="8" r={r} fill="none" stroke="var(--color-line)" strokeWidth="2" />
-        <circle
-          cx="8"
-          cy="8"
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - Math.max(pct, 0.02))}
-          className="transition-[stroke-dashoffset] duration-500"
-        />
-      </svg>
-      {Math.round(pct * 100)}%
-    </span>
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger
+        aria-label="Context and usage"
+        onPointerEnter={() => hover(true)}
+        onPointerLeave={() => hover(false)}
+        className="flex size-7 items-center justify-center rounded-lg outline-none hover:bg-hover data-[state=open]:bg-hover"
+      >
+        <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
+          <circle cx="8" cy="8" r={r} fill="none" stroke="var(--color-line)" strokeWidth="2" />
+          {context && (
+            <circle
+              cx="8"
+              cy="8"
+              r={r}
+              fill="none"
+              stroke={meterColor(pct * 100)}
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeDasharray={c}
+              strokeDashoffset={c * (1 - Math.max(pct, 0.02))}
+              className="transition-[stroke-dashoffset] duration-500"
+            />
+          )}
+        </svg>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          align="end"
+          sideOffset={8}
+          onPointerEnter={() => hover(true)}
+          onPointerLeave={() => hover(false)}
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          className="menu-glass z-50 flex w-64 flex-col gap-3 p-3 outline-none select-none"
+        >
+          <Meter
+            label="Context window"
+            percent={pct * 100}
+            note={context ? `${tokens(context.used)} of ${tokens(context.window)} tokens` : "Fills as the conversation grows"}
+          />
+          {limits.length > 0 && (
+            <>
+              <div className="h-px bg-white/[0.07]" />
+              <div className="-mb-1 text-[11.5px] font-medium text-faint">{PROVIDER_NAMES[provider]} plan usage</div>
+              {limits.map((l) => (
+                <Meter key={l.kind} label={l.label} percent={l.percent} note={l.resetsAt ? resetsIn(l.resetsAt) : undefined} />
+              ))}
+            </>
+          )}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
+}
+
+function Meter({ label, percent, note }: { label: string; percent: number; note?: string }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between text-[13px]">
+        <span className="text-ink">{label}</span>
+        <span className="text-dim tabular-nums">{Math.round(percent)}%</span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-ink/[0.08]">
+        <div
+          style={{ width: `${percent > 0 ? Math.min(100, Math.max(percent, 1)) : 0}%`, background: meterColor(percent) }}
+          className="h-full rounded-full transition-[width] duration-500"
+        />
+      </div>
+      {note && <span className="text-[11.5px] text-faint">{note}</span>}
+    </div>
+  );
+}
+
+// Brass, warming toward red near the limit.
+const meterColor = (percent: number) => (percent > 85 ? "var(--color-danger)" : percent > 60 ? "#d9a35b" : "var(--color-brass)");
+
+function resetsIn(at: number) {
+  const mins = Math.max(0, Math.round((at - Date.now()) / 60_000));
+  if (mins < 60) return `Resets in ${mins}m`;
+  if (mins < 24 * 60) return `Resets in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+  return `Resets ${new Date(at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
 }
 
 export function tokens(n: number) {
   return n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
-const EFFORTS: Record<Effort, { label: string; hint: string; level: number }> = {
-  low: { label: "Low", hint: "Quick answers, light reasoning", level: 1 },
-  medium: { label: "Medium", hint: "Balanced speed and depth", level: 2 },
-  high: { label: "High", hint: "Thorough. The default", level: 3 },
-  xhigh: { label: "Extra high", hint: "Deeper reasoning for hard problems", level: 4 },
-  max: { label: "Max", hint: "Everything it has. Slowest", level: 5 },
-  ultra: { label: "Ultra", hint: "Codex's longest reasoning", level: 5 },
+const EFFORTS: Record<Effort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
 };
 
-// Five ascending bars, filled up to the effort level.
-function EffortMeter({ level }: { level: number }) {
-  return (
-    <span className="flex h-3 items-end gap-[2px]" aria-hidden>
-      {[1, 2, 3, 4, 5].map((i) => (
-        <span
-          key={i}
-          style={{ height: `${4 + i * 1.6}px` }}
-          className={`w-[2.5px] rounded-full ${i <= level ? "bg-brass" : "bg-line"}`}
-        />
-      ))}
-    </span>
-  );
-}
-
+// The effort sits beside the model as a muted word.
 function EffortPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
   const models = useApp((s) => s.models);
   const efforts = models.find((m) => m.value === config.model)?.efforts ?? [];
   if (!efforts.length) return null;
-  const current = EFFORTS[config.effort];
   return (
     <Menu.Root>
-      <Trigger title="Effort: how hard the model thinks">
-        <EffortMeter level={current.level} />
-        {current.label}
-      </Trigger>
-      <MenuContent>
-        <Menu.Label className="px-2.5 pt-1.5 pb-1 text-[11.5px] text-faint">Effort</Menu.Label>
+      <Menu.Trigger
+        title="Reasoning effort"
+        className="-ml-1.5 flex h-7 items-center rounded-lg px-1.5 text-[13.5px] text-faint outline-none transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-hover data-[state=open]:text-ink"
+      >
+        {EFFORTS[config.effort]}
+      </Menu.Trigger>
+      <MenuContent align="end" className="w-60">
+        <MenuLabel>Reasoning</MenuLabel>
         {efforts.map((e) => (
           <MenuItem
             key={e}
             selected={e === config.effort}
-            label={
-              <span className="flex items-center gap-2.5">
-                <EffortMeter level={EFFORTS[e].level} />
-                {EFFORTS[e].label}
-              </span>
-            }
-            hint={EFFORTS[e].hint}
+            label={EFFORTS[e]}
+            badge={e === DEFAULT_EFFORT ? "Default" : undefined}
             onSelect={() => onPick({ effort: e })}
           />
         ))}
-      </MenuContent>
-    </Menu.Root>
-  );
-}
-
-function AccessPicker({ config, onPick }: { config: Config; onPick: (p: Partial<Config>) => void }) {
-  const full = config.access === "full";
-  return (
-    <Menu.Root>
-      <Trigger title="Permissions">
-        {full ? <ShieldOff size={13} className="text-faint" /> : <ShieldCheck size={13} className="text-brass" />}
-        {full ? "Full access" : "Ask first"}
-      </Trigger>
-      <MenuContent>
-        <MenuItem
-          selected={full}
-          label="Full access"
-          hint="Edits and commands run without asking"
-          onSelect={() => onPick({ access: "full" })}
-        />
-        <MenuItem
-          selected={!full}
-          label="Ask first"
-          hint="Approve commands and edits before they run"
-          onSelect={() => onPick({ access: "ask" })}
-        />
       </MenuContent>
     </Menu.Root>
   );
@@ -433,4 +773,27 @@ function toBase64(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+// Splits the text so each typed "/command" that exists is wrapped for colouring.
+function highlightCommands(text: string, names: Set<string>) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  // Known /commands and finished @file mentions are coloured text, as in T3; widths stay unchanged so the caret lines up.
+  for (const m of text.matchAll(/(^|\s)([/@])([^\s@]+)(?=\s|$)/g)) {
+    const mention = m[2] === "@";
+    if (!mention && !names.has(m[3]!)) continue;
+    if (mention && m.index! + m[0].length === text.length) continue;
+    const start = m.index! + m[1]!.length;
+    const end = start + m[3]!.length + 1;
+    parts.push(
+      text.slice(last, start),
+      <span key={start} className={mention ? "text-[#8fb3d9]" : "text-brass"}>
+        {text.slice(start, end)}
+      </span>,
+    );
+    last = end;
+  }
+  parts.push(text.slice(last));
+  return parts;
 }

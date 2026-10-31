@@ -1,0 +1,12 @@
+import { createRoot } from 'react-dom/client';
+import { App } from '../../../web/src/App';
+import { useApp } from '../../../web/src/store';
+import { startSync } from '../../../web/src/store';
+import { initialPreview, items, loadPicture, projects, threads, models } from './fixture';
+import './styles.css';
+await loadPicture();
+const state=new URLSearchParams(location.search).get('state');
+localStorage.setItem('tack.sidebarWidth','244');
+useApp.setState({ready:true,projects,threads:Object.fromEntries(threads.map(t=>[t.id,t])),models,activeThreadId:'browser-concept',sidebar:true,details:false,detailsPeek:false,browserOpen:state!=='closed',browsers:{'browser-concept':initialPreview(state==='empty')},transcripts:{'browser-concept':{order:items.map(i=>i.id),byId:Object.fromEntries(items.map(i=>[i.id,i]))}},clis:{claude:{name:'claude',state:'current',installed:'2.1.309'},codex:{name:'codex',state:'current',installed:'0.105.0'}}});
+startSync();
+createRoot(document.getElementById('root')!).render(<App />);

@@ -1,7 +1,16 @@
 // What the hub needs from an agent backend. Claude and Codex both implement it.
 
-import type { Access, Attachment, Command, Effort, Item, ModelOption, Provider, Question, Todo } from "../shared/protocol";
-import type { AgentInput, Role } from "./prompt";
+import type { Access, Attachment, Command, Effort, Item, Limit, ModelOption, Provider, Question } from "../shared/protocol";
+import type { AgentTool, Role } from "./prompt";
+
+// Accepted by the running turn, or deferred until it finishes (startup, compaction, review).
+export type Steered = "sent" | "queue";
+
+export interface ToolResult {
+  [key: string]: unknown;
+  content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
+  isError?: boolean;
+}
 
 export interface SessionEvents {
   // `final` items are complete and safe to persist; others are still streaming.
@@ -9,14 +18,19 @@ export interface SessionEvents {
   delta(itemId: string, text: string): void;
   sessionId(id: string): void;
   usage(used: number, window: number): void;
+  // Plan usage windows; a report may carry only some of them.
+  limits(limits: Limit[]): void;
+  // The provider accepted the turn, rather than merely starting its process.
+  turnStart?(): void;
   turnEnd(): void;
   closed(error?: string): void;
   approve(tool: string, input: unknown, signal: AbortSignal): Promise<boolean>;
   // The agent asked; the answers arrive later as a user message.
   ask(questions: Question[]): void;
-  todo(todos: Todo[]): void;
-  // Starts a sub-agent; returns what the calling agent is told.
-  agent(input: AgentInput): string;
+  // A sub-agent tool call (start, status, send, cancel); returns what the calling agent is told.
+  // `signal` aborts a call that waits.
+  agent(tool: AgentTool, input: unknown, signal?: AbortSignal, requestKey?: string): string | Promise<string>;
+  surface(name: string, input: unknown, signal?: AbortSignal): Promise<ToolResult>;
 }
 
 export interface SessionOptions {
@@ -30,7 +44,7 @@ export interface SessionOptions {
   // Skills the agent may see; omitted means all of them.
   skills?: string[];
   role?: Role; // default "main"
-  // Models a main agent may start sub-agents on; none means no `agent` tool.
+  // Models this agent may delegate to; omitted means no delegation tools.
   agentModels?: { value: string; provider: Provider }[];
 }
 
@@ -38,6 +52,9 @@ export interface AgentSession {
   readonly provider: Provider;
   readonly closed: boolean;
   send(text: string, attachments: Attachment[]): void;
+  // Adds input without stopping the running turn. Queue it when there is no active,
+  // steerable provider turn; a rejected steer must not become an interruption.
+  steer?(text: string, attachments: Attachment[]): Promise<Steered>;
   interrupt(): Promise<void>;
   setModel(model: string): Promise<void>;
   models(): Promise<ModelOption[]>;
@@ -50,10 +67,11 @@ export const noEvents: SessionEvents = {
   delta() {},
   sessionId() {},
   usage() {},
+  limits() {},
   turnEnd() {},
   closed() {},
   approve: async () => false,
   ask() {},
-  todo() {},
-  agent: () => "Sub-agents are not available here.",
+  agent: () => JSON.stringify({ error: "Sub-agents are not available here.", started: false }),
+  surface: async () => ({ content: [{ type: "text", text: "Visual and browser tools are not available in a probe session." }], isError: true }),
 };

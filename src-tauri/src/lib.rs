@@ -56,6 +56,11 @@ fn start_sidecar(app: &tauri::AppHandle, sidecar: Arc<Sidecar>) {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| app.path().app_data_dir().expect("app data dir"));
     let mut cmd = sidecar_command();
+    if !cfg!(debug_assertions) {
+        if let Ok(resources) = app.path().resource_dir() {
+            cmd.env("TACK_RESOURCE_DIR", resources);
+        }
+    }
     cmd.env("TACK_DATA_DIR", data_dir)
         // Our stdin closing is the sidecar's signal to exit.
         .stdin(Stdio::piped())

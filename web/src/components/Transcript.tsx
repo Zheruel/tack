@@ -5,18 +5,17 @@ import type { Item } from "../../../shared/protocol";
 import { useApp } from "../store";
 import { ItemView, LiveLine, Steps } from "./ItemView";
 import { tackTool } from "./TackTools";
-import { TaskList } from "./TaskList";
 
 export type Row = { key: string; kind: "item"; id: string } | { key: string; kind: "steps"; ids: string[] };
 
 // Consecutive tool calls and thinking collapse into one "steps" row. Tack's own tools stand
-// alone (visuals, answered questions) or not at all (the task list has its own place).
+// alone (visuals, answered questions). Historical task-list calls stay hidden.
 function toRows(order: string[], itemOf: (id: string) => Item | undefined): Row[] {
   const rows: Row[] = [];
   for (const id of order) {
     const item = itemOf(id);
     const own = item?.kind === "tool" ? tackTool(item.name) : undefined;
-    if (own === "todo") continue;
+    if (item?.kind === "tool" && ["todo", "mcp__tack__todo", "TodoWrite", "update_plan"].includes(item.name)) continue;
     const isStep = !own && (item?.kind === "tool" || item?.kind === "thinking");
     const last = rows[rows.length - 1];
     if (isStep && last?.kind === "steps") last.ids.push(id);
@@ -98,7 +97,7 @@ export function Transcript({ threadId }: { threadId: string }) {
         onWheel={onWheel}
         className="h-full overflow-y-auto [overflow-anchor:none] [scrollbar-gutter:stable]"
       >
-        <div ref={content} className="mx-auto w-full max-w-[768px] px-10 pt-6 pb-10">
+        <div ref={content} className="transcript-content mx-auto w-full max-w-[768px] px-10 pt-6 pb-10">
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((v) => {
               const row = rows[v.index]!;
@@ -119,7 +118,6 @@ export function Transcript({ threadId }: { threadId: string }) {
               );
             })}
           </div>
-          <TaskList threadId={threadId} />
           {running && <LiveLine threadId={threadId} />}
         </div>
       </div>

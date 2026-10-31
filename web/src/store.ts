@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import type {
   PullRequest,
+  BrowserPreview,
   Access,
   ApprovalRequest,
   Attachment,
@@ -12,8 +13,10 @@ import type {
   Effort,
   Event,
   Item,
+  Limit,
   ModelOption,
   Project,
+  Provider,
   Queued,
   Thread,
 } from "../../shared/protocol";
@@ -35,50 +38,78 @@ export interface Draft {
 }
 
 interface State {
+  browserOpen: boolean;
+  browsers: Record<string, BrowserPreview>;
   ready: boolean;
   projects: Project[];
   threads: Record<string, Thread>;
   models: ModelOption[];
   activeThreadId?: string;
   draft?: Draft;
+  // A suggested reply waiting to be placed in its thread's composer, never sent automatically.
+  composerRequest?: { threadId: string; text: string; attachments?: Attachment[] };
   transcripts: Record<string, Transcript>;
   queues: Record<string, Queued[]>;
+  held: Record<string, boolean>; // threads whose queue Stop paused
   approvals: Record<string, ApprovalRequest>;
   // Threads whose turn finished while you were looking elsewhere.
   unread: Record<string, true>;
   showSettled: boolean;
   clis: Partial<Record<CliName, CliStatus>>;
+  limits: Partial<Record<Provider, Limit[]>>;
   // CLIs that just finished updating, with the version they came from (shown briefly).
   updatedClis: Partial<Record<CliName, string>>;
   appUpdate?: UpdateItem;
   restartPending: boolean;
   // The thread details card at the top right: kept open beside the chat when there's room
   // (`details`), else shown on demand over it (`detailsPeek`). `detailsFit` says which applies.
+  sidebar: boolean; // the thread list is showing
   details: boolean;
   detailsPeek: boolean;
   detailsFit: boolean;
   // Each top thread's PRs with their latest GitHub state.
   prs: Record<string, PullRequest[]>;
+  // Project favicons as data URLs; null once a project is known to have none.
+  icons: Record<string, string | null>;
 }
 
 export const useApp = create<State>(() => ({
+  browserOpen: false,
+  browsers: {},
   ready: false,
   projects: [],
   threads: {},
   models: [],
   transcripts: {},
   queues: {},
+  held: {},
   approvals: {},
   unread: load("tack.unread", {}),
   showSettled: false,
   clis: {},
+  limits: {},
   updatedClis: {},
   restartPending: false,
+  sidebar: load("tack.sidebar", true),
   details: load("tack.details", true),
   detailsPeek: false,
   detailsFit: true,
   prs: {},
+  icons: {},
 }));
+
+export function setSidebar(open: boolean) {
+  save("tack.sidebar", open);
+  useApp.setState({ sidebar: open });
+}
+
+export function suggestReply(threadId: string, text: string) {
+  if (text.trim()) useApp.setState({ composerRequest: { threadId, text: text.trim() } });
+}
+
+export function attachBrowserImage(threadId: string, image: Attachment, url: string) {
+  useApp.setState({ composerRequest: { threadId, text: `About this page: ${url}`, attachments: [image] } });
+}
 
 export function toggleDetails() {
   const { details, detailsFit, detailsPeek } = useApp.getState();
@@ -91,6 +122,15 @@ export function toggleDetails() {
 export async function loadPrs(threadId: string) {
   const prs = await call("git.prs", { threadId }).catch(() => undefined);
   if (prs) useApp.setState((s) => ({ prs: { ...s.prs, [threadId]: prs } }));
+}
+
+const iconLoads = new Set<string>();
+export async function loadIcon(projectId: string) {
+  if (projectId in useApp.getState().icons || iconLoads.has(projectId)) return;
+  iconLoads.add(projectId);
+  const icon = await call("project.icon", { projectId }).catch(() => null);
+  iconLoads.delete(projectId);
+  useApp.setState((s) => ({ icons: { ...s.icons, [projectId]: icon } }));
 }
 
 const set = useApp.setState;
@@ -118,7 +158,7 @@ export async function openThread(threadId: string) {
     save("tack.unread", unread);
     return { activeThreadId: threadId, draft: undefined, unread };
   });
-  const { items, queue, streaming, approvals } = await call("thread.open", { threadId });
+  const { items, queue, held, streaming, approvals } = await call("thread.open", { threadId });
   const t: Transcript = { order: [], byId: {} };
   for (const item of [...items, ...streaming]) {
     if (!(item.id in t.byId)) t.order.push(item.id);
@@ -127,6 +167,7 @@ export async function openThread(threadId: string) {
   set((s) => ({
     transcripts: { ...s.transcripts, [threadId]: t },
     queues: { ...s.queues, [threadId]: queue },
+    held: { ...s.held, [threadId]: held },
     approvals: { ...s.approvals, ...Object.fromEntries(approvals.map((a) => [a.id, a])) },
   }));
 }
@@ -186,6 +227,8 @@ export function setShowSettled(show: boolean) {
 
 function apply(e: Event) {
   switch (e.type) {
+    case "browser":
+      return set((s) => ({ browsers: { ...s.browsers, [e.threadId]: e.preview } }));
     case "project.upserted":
       return set((s) => ({ projects: [...s.projects.filter((p) => p.id !== e.project.id), e.project] }));
     case "project.removed":
@@ -205,12 +248,15 @@ function apply(e: Event) {
     case "thread.removed":
       set((s) => {
         const { [e.threadId]: _, ...threads } = s.threads;
-        return { threads, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
+        const { [e.threadId]: _browser, ...browsers } = s.browsers;
+        return { threads, browsers, activeThreadId: s.activeThreadId === e.threadId ? undefined : s.activeThreadId };
       });
       if (!get().activeThreadId && !get().draft) startDraft();
       return;
     case "models":
       return set({ models: e.models });
+    case "limits":
+      return set((st) => ({ limits: { ...st.limits, [e.provider]: e.limits } }));
     case "item":
       return set((s) => {
         const t = s.transcripts[e.threadId];
@@ -239,7 +285,7 @@ function apply(e: Event) {
         };
       });
     case "queue":
-      return set((s) => ({ queues: { ...s.queues, [e.threadId]: e.queue } }));
+      return set((s) => ({ queues: { ...s.queues, [e.threadId]: e.queue }, held: { ...s.held, [e.threadId]: e.held } }));
     case "approval":
       return set((s) => ({ approvals: { ...s.approvals, [e.request.id]: e.request } }));
     case "cli": {
@@ -262,13 +308,14 @@ function apply(e: Event) {
 export function startSync() {
   onEvent(apply);
   onConnect(async () => {
-    const { projects, threads, models, clis } = await call("state.get", {});
+    const { projects, threads, models, clis, limits } = await call("state.get", {});
     set({
       ready: true,
       projects,
       threads: Object.fromEntries(threads.map((t) => [t.id, t])),
       models,
       clis: Object.fromEntries(clis.map((c) => [c.name, c])),
+      limits,
     });
     // Launch on a new thread. On a reconnect, stay where you were.
     const active = get().activeThreadId;

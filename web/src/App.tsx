@@ -1,10 +1,13 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { ChevronDown, ChevronRight, FolderPlus, PanelRight } from "lucide-react";
+import { ChevronDown, ChevronRight, FolderPlus, Globe, PanelRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Composer, MenuContent, MenuItem } from "./components/Composer";
 import { ThreadDetails } from "./components/ThreadDetails";
-import { addProject, Sidebar } from "./components/Sidebar";
+import { addProject, Sidebar, SidebarToggle } from "./components/Sidebar";
 import { Transcript } from "./components/Transcript";
+import { BrowserPane } from "./components/BrowserPane";
+import { Approval } from "./components/Approvals";
+import { Questions } from "./components/Questions";
 import { openExternal } from "./native";
 import { call } from "./rpc";
 import { openThread, startDraft, toggleDetails, updateDraft, useApp } from "./store";
@@ -15,19 +18,24 @@ export function App() {
   const hasThread = useApp((s) => !!(activeId && s.threads[activeId]));
   const drafting = useApp((s) => !!s.draft);
   const hasProjects = useApp((s) => s.projects.length > 0);
+  const browserOpen = useApp((s) => s.browserOpen);
   useShortcuts();
 
   return (
     <div className="flex h-full">
+      <SidebarToggle />
       <Sidebar />
       <main className="relative flex min-w-0 flex-1 flex-col border-l border-line/70 bg-canvas">
         {hasThread ? (
-          <>
-            <Header threadId={activeId!} />
-            <ThreadDetails threadId={activeId!} />
-            <Transcript threadId={activeId!} />
-            <Composer threadId={activeId!} />
-          </>
+            <div className="thread-workspace">
+              <div className="thread-chat">
+                <Header threadId={activeId!} />
+                <ThreadDetails threadId={activeId!} />
+                <Transcript threadId={activeId!} />
+                <ComposerOrNote threadId={activeId!} />
+              </div>
+              {browserOpen && <BrowserPane key={activeId!} threadId={activeId!} />}
+            </div>
         ) : drafting ? (
           <DraftView />
         ) : (
@@ -102,12 +110,43 @@ function ProjectPicker() {
   );
 }
 
+// A sub-agent takes its direction from the agent that started it, so its thread has no composer.
+function ComposerOrNote({ threadId }: { threadId: string }) {
+  const thread = useApp((s) => s.threads[threadId]);
+  const parent = useApp((s) => (thread?.parentId ? s.threads[thread.parentId] : undefined));
+  if (!thread?.parentId) return <Composer threadId={threadId} />;
+  const stopping = thread.agent?.status === "cancelling";
+  const active = thread.status === "running" || thread.agent?.status === "running" || thread.agent?.status === "waiting" || stopping;
+  return (
+    <div className="thread-composer mx-auto w-full max-w-[768px] px-8 pb-4">
+      <Questions threadId={threadId} />
+      <Approval threadId={threadId} />
+      <div className="flex w-full items-center gap-3 rounded-2xl border border-line/70 px-4 py-3 text-[13.5px] text-dim">
+        <span className="min-w-0 flex-1">
+          This agent works for{" "}
+          <button onClick={() => parent && openThread(parent.id)} className="text-ink underline decoration-faint underline-offset-2 hover:decoration-ink">
+            {parent?.title ?? "its parent thread"}
+          </button>
+          . Message that thread to steer it.
+        </span>
+        {active && (
+          <button disabled={stopping} onClick={() => call("chat.interrupt", { threadId })} className="shrink-0 rounded-md px-2 py-1 text-[12.5px] text-danger enabled:hover:bg-danger/10 disabled:opacity-50">
+            {stopping ? "Stopping…" : "Stop"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Header({ threadId }: { threadId: string }) {
   const thread = useApp((s) => s.threads[threadId])!;
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
   const parent = useApp((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
   const details = useApp((s) => (s.detailsFit ? s.details : s.detailsPeek));
   const [editing, setEditing] = useState(false);
+  const sidebar = useApp((s) => s.sidebar);
+  const browserOpen = useApp((s) => s.browserOpen);
 
   const rename = (title: string) => {
     setEditing(false);
@@ -115,7 +154,7 @@ function Header({ threadId }: { threadId: string }) {
   };
 
   return (
-    <header data-tauri-drag-region className="flex h-[46px] shrink-0 items-center gap-2.5 px-6">
+    <header data-tauri-drag-region data-sidebar={sidebar || undefined} className={`thread-header flex h-[46px] shrink-0 items-center gap-2.5 pr-6 transition-[padding] duration-200 ${sidebar ? "pl-6" : "pl-[128px]"}`}>
       {parent && (
         <button
           onClick={() => openThread(parent.id)}
@@ -147,18 +186,31 @@ function Header({ threadId }: { threadId: string }) {
         </h1>
       )}
       {project && !editing && (
-        <span className="shrink-0 rounded-md bg-raised px-1.5 py-0.5 text-[11.5px] text-dim" title={project.path}>
+        <span className="thread-project-chip shrink-0 rounded-md bg-raised px-1.5 py-0.5 text-[11.5px] text-dim" title={project.path}>
           {project.name}
         </span>
       )}
-      <button
-        data-details-toggle
-        onClick={toggleDetails}
-        title="Thread details"
-        className={`ml-auto flex size-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-hover hover:text-ink ${details ? "text-ink" : "text-faint"}`}
-      >
-        <PanelRight size={15} strokeWidth={1.8} />
-      </button>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <button
+          onClick={() => useApp.setState({ browserOpen: !browserOpen })}
+          title="Browser (⌘⇧B)"
+          aria-label="Toggle browser"
+          aria-pressed={browserOpen}
+          className={`browser-toggle flex size-7 shrink-0 items-center justify-center rounded-md text-dim transition-colors hover:bg-hover hover:text-ink ${browserOpen ? "bg-hover" : ""}`}
+        >
+          <Globe size={15} strokeWidth={1.8} />
+        </button>
+        <button
+          data-details-toggle
+          onClick={toggleDetails}
+          title="Thread details"
+          aria-label="Toggle thread details"
+          aria-pressed={details}
+          className={`flex size-7 shrink-0 items-center justify-center rounded-md text-dim transition-colors hover:bg-hover hover:text-ink ${details ? "bg-hover" : ""}`}
+        >
+          <PanelRight size={15} strokeWidth={1.8} />
+        </button>
+      </div>
     </header>
   );
 }
@@ -166,6 +218,12 @@ function Header({ threadId }: { threadId: string }) {
 function useShortcuts() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        useApp.setState((s) => ({ browserOpen: !s.browserOpen }));
+        return;
+      }
       if (!e.metaKey) return;
       if (e.key === "o") {
         e.preventDefault();

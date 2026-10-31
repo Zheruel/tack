@@ -2,42 +2,58 @@
 // Maps SDK messages onto provider-neutral transcript items.
 
 import { createSdkMcpServer, query, tool, type Query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Attachment, Command, Item, ModelOption, Todo } from "../shared/protocol";
-import { agentDescription, applyTodo, ASKED, systemPrompt, TOOLS } from "./prompt";
-import type { AgentSession, SessionEvents, SessionOptions } from "./session";
+import type { Attachment, Command, Item, ModelOption } from "../shared/protocol";
+import { agentDescription, ASKED, systemPrompt, TOOLS } from "./prompt";
+import type { AgentSession, SessionEvents, SessionOptions, Steered } from "./session";
+import { SURFACE_TOOLS } from "./surfaces";
 
 // Built-in tools Tack keeps. Everything else (scheduling, cron, worktrees, notifications, review
 // reporting, ...) is for other Claude Code surfaces and only costs context here. Sub-agents are
 // Tack's own `agent` tool, which can run any provider and shows each one as a thread.
-const BUILTIN_TOOLS = ["Bash", "Read", "Edit", "Write", "Skill", "WebFetch", "WebSearch"];
+const BUILTIN_TOOLS = ["Bash", "Read", "Edit", "Write", "Skill", "WebFetch", "WebSearch", "ToolSearch"];
 
-// ask / todo / show / agent, served in-process. The model sees them as mcp__tack__<name>.
-// A sub-agent gets neither ask (nobody to ask) nor agent (one level deep).
+// Tack's tools, served in-process. The model sees them as mcp__tack__<name>.
+// Children can ask and delegate too; closing summaries still go to their parent as plain text.
+// Alignment and closing tools stay loaded; the rest can be discovered through ToolSearch.
 function tackTools(events: SessionEvents, opts: SessionOptions) {
   const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
-  let todos: Todo[] = [];
+  const signalOf = (extra: unknown) => (extra as { signal?: AbortSignal } | undefined)?.signal;
+  const scope = crypto.randomUUID();
+  const keyOf = (extra: unknown) => {
+    const request = extra as { requestId?: string | number; _meta?: Record<string, unknown> } | undefined;
+    const id = request?._meta?.["claudecode/toolUseId"] ?? request?._meta?.toolUseId ?? request?.requestId;
+    return `${scope}:${typeof id === "string" || typeof id === "number" ? id : crypto.randomUUID()}`;
+  };
   return createSdkMcpServer({
     name: "tack",
-    alwaysLoad: true,
     tools: [
+      tool("ask", TOOLS.ask.description, TOOLS.ask.input, async ({ questions }) => {
+        events.ask(questions);
+        return text(ASKED);
+      }, { alwaysLoad: true }),
+      ...(opts.agentModels?.length
+        ? [
+            tool("agent", agentDescription(opts.agentModels), TOOLS.agent.input, async (input, extra) => text(await events.agent("agent", input, signalOf(extra), keyOf(extra))), {
+              searchHint: "start a sub-agent, delegate work in parallel",
+            }),
+            tool("agent_status", TOOLS.agent_status.description, TOOLS.agent_status.input, async (input, extra) => text(await events.agent("agent_status", input, signalOf(extra), keyOf(extra))), {
+              searchHint: "read a sub-agent's status or result, wait for it",
+            }),
+            tool("agent_send", TOOLS.agent_send.description, TOOLS.agent_send.input, async (input, extra) => text(await events.agent("agent_send", input, signalOf(extra), keyOf(extra))), {
+              searchHint: "message a sub-agent, follow up, steer it",
+            }),
+            tool("agent_cancel", TOOLS.agent_cancel.description, TOOLS.agent_cancel.input, async (input, extra) => text(await events.agent("agent_cancel", input, signalOf(extra), keyOf(extra))), {
+              searchHint: "stop a sub-agent",
+            }),
+          ]
+        : []),
       ...(opts.role === "agent"
         ? []
-        : [
-            tool("ask", TOOLS.ask.description, TOOLS.ask.input, async ({ questions }) => {
-              events.ask(questions);
-              return text(ASKED);
-            }),
-          ]),
-      ...(opts.agentModels?.length
-        ? [tool("agent", agentDescription(opts.agentModels), TOOLS.agent.input, async (input) => text(events.agent(input)))]
-        : []),
-      tool("todo", TOOLS.todo.description, TOOLS.todo.input, async (input) => {
-        todos = applyTodo(todos, input);
-        events.todo(todos);
-        const current = todos.findIndex((t) => t.status === "in_progress");
-        return text(current < 0 ? "All steps done." : `Step ${current + 1} of ${todos.length} in progress.`);
-      }),
-      tool("show", TOOLS.show.description, TOOLS.show.input, async () => text("Shown to the user above your reply.")),
+        : [tool("wrap_up", TOOLS.wrap_up.description, TOOLS.wrap_up.input, async () => text("Shown to the user."), { alwaysLoad: true })]),
+      ...Object.entries(SURFACE_TOOLS).map(([name, definition]) => tool(name, definition.description, definition.input,
+        async (input, extra) => events.surface(name, input, signalOf(extra)),
+        { searchHint: name.startsWith("preview_") ? "isolated browser testing, screenshot, navigate, click, type" : "visualize, interactive visual, chart, diagram, canvas, HTML preview" },
+      )),
     ],
   });
 }
@@ -83,6 +99,7 @@ export class ClaudeSession implements AgentSession {
   private streamed = new Set<string>(); // message ids already received via stream events
   private messageId = "";
   private turnStart = 0;
+  private turnStarted = false;
   private interrupted = false;
   private prompt = 0; // tokens sent in the latest request, cache included
   private context = 0; // ...plus what the model wrote back
@@ -98,18 +115,25 @@ export class ClaudeSession implements AgentSession {
         resume: opts.resume,
         pathToClaudeCodeExecutable: opts.bin,
         // Background shell tasks report back through tools Tack leaves out, so their output would be lost.
-        env: { ...opts.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" },
+        // claude.ai connectors (Linear, Docs, ...) load after the first request and add ~44k tokens of tool
+        // definitions to every request after it. Tack has no UI for them, so they stay off.
+        env: { ...opts.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", ENABLE_CLAUDEAI_MCP_SERVERS: "false", CLAUDE_CODE_ENABLE_TODO_TOOLS: "0" },
         abortController: this.abort,
         includePartialMessages: true,
         systemPrompt: systemPrompt("claude", opts.role),
         tools: BUILTIN_TOOLS,
         mcpServers: { tack: tackTools(events, opts) },
+        hooks: {
+          // wrap_up is the last call of a turn; skip the model request that would only say "done".
+          PostToolUse: [{ matcher: "mcp__tack__wrap_up", hooks: [async () => ({ continue: false })] }],
+        },
         skills: opts.skills ?? "all",
         title: "Tack", // Tack names threads itself; skips Claude's title-generation request
         permissionMode: opts.access === "full" ? "bypassPermissions" : "default",
         // Flag settings outrank the user's own settings, so Tack's access toggle wins. Tack's prompt
         // already sets the writing style, so a configured output style would only repeat it.
-        settings: { permissions: { defaultMode: opts.access === "full" ? "bypassPermissions" : "default" }, outputStyle: "default" },
+        // The skill listing is ~3k tokens at the default 1536 chars per skill; 100 keeps name and gist (~1.2k).
+        settings: { permissions: { defaultMode: opts.access === "full" ? "bypassPermissions" : "default" }, outputStyle: "default", skillListingMaxDescChars: 100 },
         allowDangerouslySkipPermissions: opts.access === "full",
         canUseTool:
           opts.access === "ask"
@@ -124,12 +148,24 @@ export class ClaudeSession implements AgentSession {
   }
 
   send(text: string, attachments: Attachment[]) {
+    this.turnStart = Date.now();
+    this.turnStarted = false;
+    this.push(text, attachments);
+  }
+
+  // A message pushed while a turn runs is folded into it at the next tool boundary; one that
+  // lands after the last tool call starts a follow-up turn (the result says so).
+  async steer(text: string, attachments: Attachment[]): Promise<Steered> {
+    this.push(text, attachments);
+    return "sent";
+  }
+
+  private push(text: string, attachments: Attachment[]) {
     const content: any[] = attachments.flatMap((a) => a.kind !== "image" ? [] : [{
       type: "image",
       source: { type: "base64", media_type: a.mediaType, data: a.data },
     }]);
     if (text) content.push({ type: "text", text });
-    this.turnStart = Date.now();
     this.inbox.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null });
   }
 
@@ -206,7 +242,18 @@ export class ClaudeSession implements AgentSession {
       case "user":
         if (msg.parent_tool_use_id === null) this.toolResults(msg.message as any);
         return;
+      case "rate_limit_event": {
+        const l = (msg as any).rate_limit_info;
+        const label = LIMIT_LABELS[l?.rateLimitType];
+        if (label && typeof l.utilization === "number") {
+          // Utilization arrives as a fraction; resetsAt in seconds.
+          const percent = Math.round((l.utilization <= 1 ? l.utilization * 100 : l.utilization) * 10) / 10;
+          this.events.limits([{ kind: l.rateLimitType, label, percent, resetsAt: l.resetsAt ? l.resetsAt * 1000 : undefined }]);
+        }
+        return;
+      }
       case "result": {
+        this.turnStarted = false;
         this.flushOpen();
         const error = this.interrupted
           ? "Interrupted"
@@ -220,6 +267,11 @@ export class ClaudeSession implements AgentSession {
           { id: crypto.randomUUID(), kind: "turn", durationMs: Date.now() - (this.turnStart || Date.now()), error, ts: Date.now() },
           true,
         );
+        // Sends that arrived too late to fold in run as their own turn, with their own result.
+        if (((msg as any).queued_turn_count ?? 0) > 0) {
+          this.turnStart = Date.now();
+          return;
+        }
         this.events.turnEnd();
         return;
       }
@@ -229,6 +281,7 @@ export class ClaudeSession implements AgentSession {
   private stream(ev: any) {
     switch (ev.type) {
       case "message_start": {
+        this.started();
         this.messageId = ev.message.id;
         this.streamed.add(ev.message.id);
         const u = ev.message.usage ?? {};
@@ -310,6 +363,7 @@ export class ClaudeSession implements AgentSession {
 
   // Fallback for blocks that arrived without stream events.
   private assistant(message: { id: string; content: any[] }) {
+    this.started();
     if (this.streamed.has(message.id)) return;
     message.content.forEach((b, i) => {
       const ts = Date.now();
@@ -320,6 +374,12 @@ export class ClaudeSession implements AgentSession {
         this.events.item(item, false);
       }
     });
+  }
+
+  private started() {
+    if (this.turnStarted) return;
+    this.turnStarted = true;
+    this.events.turnStart?.();
   }
 
   private toolResults(message: { content: unknown }) {
@@ -338,6 +398,13 @@ export class ClaudeSession implements AgentSession {
 
 // Tool output kept for display only; the model already has the full result.
 const MAX_OUTPUT = 20_000;
+
+const LIMIT_LABELS: Record<string, string> = {
+  five_hour: "5-hour limit",
+  seven_day: "Weekly limit",
+  seven_day_opus: "Weekly, Opus",
+  seven_day_sonnet: "Weekly, Sonnet",
+};
 
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;

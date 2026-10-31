@@ -33,6 +33,10 @@
   },
   "bundle": {
     "active": true,
+    "resources": {
+      "../node_modules/playwright/": "browser-runtime/node_modules/playwright/",
+      "../node_modules/playwright-core/": "browser-runtime/node_modules/playwright-core/"
+    },
     "targets": [
       "app",
       "dmg"

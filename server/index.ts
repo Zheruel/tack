@@ -3,14 +3,17 @@
 //   TACK_DATA_DIR  where the database and transcripts live
 //   TACK_DEV=1     no auth token (for running the UI in a plain browser)
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
+import { projectIcon } from "./favicon";
 import { Git } from "./git";
 import { Hub } from "./hub";
 import { Store } from "./store";
 import { Updates } from "./updates";
+import { Surfaces } from "./surfaces";
+import { chromiumInstalled, installChromium } from "./chromium";
 import type { ClientFrame, Event, Requests, ServerFrame } from "../shared/protocol";
 
 const dev = process.env.TACK_DEV === "1";
@@ -29,7 +32,19 @@ async function loginPath(): Promise<string> {
   return process.env.PATH ?? "";
 }
 
-const PATH = await loginPath();
+let PATH = await loginPath();
+// Models often write `python` (a script run, a heredoc). macOS only ships `python3`, so give agents a
+// `python` alias rather than let the first call fail.
+if (!Bun.which("python", { PATH })) {
+  const python3 = Bun.which("python3", { PATH });
+  if (python3) {
+    const shims = join(dataDir, "shims");
+    mkdirSync(shims, { recursive: true });
+    rmSync(join(shims, "python"), { force: true });
+    symlinkSync(python3, join(shims, "python"));
+    PATH = `${shims}:${PATH}`;
+  }
+}
 const bins = {
   claude: Bun.which("claude", { PATH }) ?? undefined,
   codex: Bun.which("codex", { PATH }) ?? undefined,
@@ -46,17 +61,18 @@ if (vars.CLAUDECODE) {
 }
 
 const store = new Store(dataDir);
-const sockets = new Set<ServerWebSocket<unknown>>();
+vars.TACK_DATA_DIR = dataDir;
+type SocketState = { viewerId: string; browserThread?: string; unwatch?: () => void };
+type Socket = ServerWebSocket<SocketState>;
+const sockets = new Set<Socket>();
 const broadcast = (event: Event) => {
   const frame = JSON.stringify({ event } satisfies ServerFrame);
   for (const ws of sockets) ws.send(frame);
 };
-// Apps the project can be opened in, in menu order. Checked against what's installed.
-const EDITORS = ["Cursor", "Visual Studio Code", "Zed", "Windsurf", "Sublime Text", "WebStorm", "IntelliJ IDEA", "Xcode", "Ghostty", "iTerm", "Terminal"];
-const APP_DIRS = ["/Applications", join(homedir(), "Applications"), "/System/Applications/Utilities"];
 
-const hub = new Hub(store, broadcast, { bins, vars });
 const git = new Git(vars);
+const surfaces = new Surfaces(join(dataDir, "visuals"), (threadId, preview) => broadcast({ type: "browser", threadId, preview }));
+const hub = new Hub(store, broadcast, { bins, vars }, git, surfaces);
 const updates = new Updates(
   bins,
   vars,
@@ -70,14 +86,68 @@ const projectPath = (projectId: string) => {
   return project.path;
 };
 
-type Handlers = { [M in keyof Requests]: (p: Requests[M]["params"]) => Promise<Requests[M]["result"]> | Requests[M]["result"] };
+const workspacePath = (projectId: string, threadId?: string) => {
+  const path = projectPath(projectId);
+  if (!threadId) return path;
+  const thread = hub.thread(threadId);
+  if (thread.projectId !== projectId) throw new Error("Thread does not belong to this project.");
+  return thread.workspace?.path ?? path;
+};
+
+type Handlers = { [M in keyof Requests]: (p: Requests[M]["params"], ws: Socket) => Promise<Requests[M]["result"]> | Requests[M]["result"] };
 
 const handlers: Handlers = {
+  "browser.get": ({ threadId }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    return { ...surfaces.browser.getPreview(threadId), needsInstall: !chromiumInstalled() };
+  },
+  "browser.watch": ({ threadId, visible }, ws) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    ws.data.unwatch?.();
+    ws.data.unwatch = undefined;
+    ws.data.browserThread = undefined;
+    if (visible) {
+      ws.data.browserThread = threadId;
+      ws.data.unwatch = surfaces.browser.watch(threadId, ws.data.viewerId, (frame) => {
+        // Drop a stale frame rather than queue megabytes ahead of input and chat replies.
+        if (ws.readyState !== 1 || ws.getBufferedAmount() > 2 * 1024 * 1024) return;
+        ws.send(JSON.stringify({ event: { type: "browser.frame", threadId, frame } } satisfies ServerFrame));
+      });
+    }
+    return { ...surfaces.browser.getPreview(threadId), needsInstall: !chromiumInstalled() };
+  },
+  "browser.resize": async ({ threadId, width, height }, ws) => {
+    if (!store.thread(threadId) || ws.data.browserThread !== threadId) throw new Error("Open this thread's browser first.");
+    await surfaces.browser.resize(threadId, width, height);
+    return null;
+  },
+  "browser.input": async ({ threadId, tabId, input }, ws) => {
+    if (!store.thread(threadId) || ws.data.browserThread !== threadId) throw new Error("Open this thread's browser first.");
+    return surfaces.browser.input(threadId, tabId, ws.data.viewerId, input);
+  },
+  "browser.install": async ({ threadId }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    await installChromium();
+    return null;
+  },
+  "browser.command": async ({ threadId, name, input }, ws) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    if (!["preview_open", "preview_navigate", "preview_snapshot", "preview_close", "preview_act"].includes(name)) throw new Error("Unsupported browser command");
+    if (name === "preview_act" && !["reload", "back", "forward"].includes(input.action ?? "")) throw new Error("Unsupported browser navigation");
+    const result = await surfaces.browser.execute(threadId, name, input, undefined, ws.data.viewerId);
+    if (result.isError) throw new Error(result.content.filter((p) => p.type === "text").map((p) => p.text).join("\n"));
+    return surfaces.browser.getPreview(threadId);
+  },
+  "visual.get": ({ threadId, id }) => {
+    if (!store.thread(threadId)) throw new Error("Thread not found");
+    return surfaces.visual.read(threadId, id);
+  },
   "state.get": () => ({
     projects: store.projects(),
     threads: hub.threads(),
     models: hub.models,
     clis: Object.values(updates.status),
+    limits: hub.limits,
   }),
   "project.add": ({ path }) => {
     if (!existsSync(path)) throw new Error(`No such folder: ${path}`);
@@ -86,10 +156,11 @@ const handlers: Handlers = {
     return project;
   },
   "project.remove": ({ projectId }) => {
-    for (const threadId of store.removeProject(projectId)) {
+    for (const { id: threadId } of store.threads().filter((t) => t.projectId === projectId)) {
       hub.closeThread(threadId);
       broadcast({ type: "thread.removed", threadId });
     }
+    store.removeProject(projectId);
     broadcast({ type: "project.removed", projectId });
     return null;
   },
@@ -99,14 +170,24 @@ const handlers: Handlers = {
     broadcast({ type: "thread.upserted", thread });
     return thread;
   },
+  "thread.regenerateTitle": ({ threadId }) => (hub.regenerateTitle(threadId), null),
   "thread.rename": ({ threadId, title }) => {
+    hub.cancelTitle(threadId); // a title the user chose is not overwritten
     store.updateThread(threadId, { title: title.trim() || "Untitled" });
     broadcast({ type: "thread.upserted", thread: hub.thread(threadId) });
     return null;
   },
   "thread.delete": ({ threadId }) => {
     // A thread's sub-agents go with it.
-    for (const id of [threadId, ...store.threads().filter((t) => t.parentId === threadId).map((t) => t.id)]) {
+    const ids = new Set([threadId]);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const thread of store.threads()) if (thread.parentId && ids.has(thread.parentId) && !ids.has(thread.id)) {
+        ids.add(thread.id);
+        changed = true;
+      }
+    }
+    for (const id of [...ids].reverse()) {
       hub.closeThread(id);
       store.deleteThread(id);
       broadcast({ type: "thread.removed", threadId: id });
@@ -117,44 +198,47 @@ const handlers: Handlers = {
   "thread.settle": ({ threadId, settled }) => (hub.settle(threadId, settled), null),
   "thread.configure": ({ threadId, ...patch }) => hub.configure(threadId, patch),
   "chat.send": ({ threadId, text, attachments, steer }) => {
+    // A sub-agent takes its direction from the agent that started it (agent_send), not from the user.
+    if (store.thread(threadId)?.parentId) throw new Error("Message the thread that started this agent instead.");
     hub.send(threadId, text, attachments, steer);
     return null;
   },
   "chat.unqueue": ({ threadId, queuedId }) => (hub.unqueue(threadId, queuedId), null),
+  "chat.edit": ({ threadId, queuedId, text }) => (hub.edit(threadId, queuedId, text), null),
+  "chat.resume": ({ threadId }) => (hub.resume(threadId), null),
   "chat.steer": ({ threadId, queuedId }) => (hub.steer(threadId, queuedId), null),
   "chat.interrupt": async ({ threadId }) => (await hub.interrupt(threadId), null),
+  "agent.answer": async ({ threadId, text }) => (await hub.answerAgent(threadId, text), null),
   "approval.answer": ({ approvalId, allow }) => (hub.answer(approvalId, allow), null),
   "commands.list": ({ projectId, provider }) => hub.commands(projectId, provider),
   "files.search": ({ projectId, query }) => git.search(projectPath(projectId), query),
-  "git.info": ({ projectId }) => git.info(projectPath(projectId)),
+  "project.icon": ({ projectId }) => projectIcon(projectPath(projectId)),
+  "threads.search": ({ query }) => store.searchThreads(query),
+  "git.info": ({ projectId, threadId }) => git.info(workspacePath(projectId, threadId)),
+  "git.branches": ({ projectId }) => git.branches(projectPath(projectId)),
+  "git.checkout": async ({ projectId, branch }) => (await git.checkout(projectPath(projectId), branch), null),
   "git.prs": ({ threadId }) => {
     const t = hub.thread(threadId);
     const top = t.parentId ? hub.thread(t.parentId) : t; // a sub-agent shows its parent's
     return git.prs(projectPath(top.projectId), top.prs ?? []);
   },
   "cli.update": ({ name }) => (updates.update(name), null),
-  "project.reveal": ({ projectId }) => (Bun.spawn(["open", "-R", projectPath(projectId)]), null),
-  "editors.list": () => EDITORS.filter((name) => APP_DIRS.some((d) => existsSync(join(d, `${name}.app`)))),
-  "editor.open": ({ projectId, editor }) => {
-    if (!EDITORS.includes(editor)) throw new Error(`Unknown editor ${editor}`);
-    Bun.spawn(["open", "-a", editor, projectPath(projectId)]);
-    return null;
-  },
+  "project.reveal": ({ projectId, threadId }) => (Bun.spawn(["open", "-R", workspacePath(projectId, threadId)]), null),
 };
 
-const server = Bun.serve({
+const server = Bun.serve<SocketState>({
   hostname: "127.0.0.1",
   port: Number(process.env.TACK_PORT ?? 0),
   fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname !== "/ws") return new Response("tack", { status: 404 });
     if (!dev && url.searchParams.get("token") !== token) return new Response("unauthorized", { status: 401 });
-    return server.upgrade(req) ? undefined : new Response("upgrade failed", { status: 400 });
+    return server.upgrade(req, { data: { viewerId: crypto.randomUUID() } }) ? undefined : new Response("upgrade failed", { status: 400 });
   },
   websocket: {
     perMessageDeflate: false,
     open: (ws) => void sockets.add(ws),
-    close: (ws) => void sockets.delete(ws),
+    close: (ws) => { ws.data.unwatch?.(); sockets.delete(ws); },
     async message(ws, raw) {
       let frame: ClientFrame;
       try {
@@ -163,9 +247,9 @@ const server = Bun.serve({
         return;
       }
       try {
-        const handler = handlers[frame.method] as (p: unknown) => unknown;
+        const handler = handlers[frame.method] as (p: unknown, ws: Socket) => unknown;
         if (!handler) throw new Error(`Unknown method: ${frame.method}`);
-        const result = await handler(frame.params);
+        const result = await handler(frame.params, ws);
         ws.send(JSON.stringify({ id: frame.id, result: result ?? null } satisfies ServerFrame));
       } catch (e) {
         ws.send(JSON.stringify({ id: frame.id, error: e instanceof Error ? e.message : String(e) } satisfies ServerFrame));
@@ -178,10 +262,24 @@ const server = Bun.serve({
 console.log(`TACK_READY ${JSON.stringify({ port: server.port, token })}`);
 if (!bins.claude && !bins.codex) console.error("tack: neither `claude` nor `codex` found on PATH");
 
+hub.backfillBranches().catch(() => {});
+hub.recoverAgents();
 hub.loadModels().catch((e) => console.error("tack: could not load models:", e.message));
 
 // Exit with the parent (Tauri closes our stdin when it quits).
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const timeout = setTimeout(() => process.exit(0), 5000).unref();
+  await hub.shutdown();
+  await surfaces.dispose();
+  clearTimeout(timeout);
+  process.exit(0);
+}
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
 if (!dev) {
-  process.stdin.on("end", () => process.exit(0));
+  process.stdin.on("end", shutdown);
   process.stdin.resume();
 }

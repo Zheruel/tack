@@ -1,101 +1,22 @@
 // Transcript views for the tools Tack gives every agent: `show` draws a visual inline, `ask`
 // leaves a record of what was asked and answered, `agent` is a card for the sub-agent it started.
-// `todo` lives in the task list, not here.
 
-import { Check, ChevronRight, Maximize2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Item, Question } from "../../../shared/protocol";
+import { Ban, Check, ChevronRight, X } from "lucide-react";
+import type { Item, Question, Thread } from "../../../shared/protocol";
 import { openThread, useApp } from "../store";
 import { ProviderLogo } from "./Logos";
+import { isThreadDescendant } from "./Approvals";
+
+export { Visual } from "./Visual";
 
 type Tool = Extract<Item, { kind: "tool" }>;
 
 // Claude sees them as mcp__tack__<name>, Codex by their plain name.
-export function tackTool(name: string): "ask" | "todo" | "show" | "agent" | undefined {
+export function tackTool(name: string): "ask" | "show" | "agent" | "wrap_up" | undefined {
   const bare = name.replace(/^mcp__tack__/, "");
-  return bare === "ask" || bare === "todo" || bare === "show" || bare === "agent" ? bare : undefined;
+  return bare === "ask" || bare === "show" || bare === "agent" || bare === "wrap_up" ? bare : undefined;
 }
 
-// ---- show
-
-// The agent's HTML runs in an opaque-origin frame with no network: inline styles and scripts only.
-const FRAME_CSS = `
-:root{--ink:#ece6dd;--dim:#a69d92;--faint:#70685f;--line:#322d29;--raised:#24211e;--accent:#c9a35b;--ok:#8fb38a;--danger:#e0796b;
---font:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace;color-scheme:dark}
-html,body{margin:0;padding:0;background:transparent;color:var(--ink);font:13.5px/1.5 var(--font)}
-*{box-sizing:border-box}`;
-
-function frameDoc(html: string, id: string) {
-  return `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:">
-<style>${FRAME_CSS}</style></head><body>${html}
-<script>(()=>{const post=()=>parent.postMessage({tackFrame:${JSON.stringify(id)},height:Math.ceil(document.documentElement.scrollHeight)},"*");
-new ResizeObserver(post).observe(document.documentElement);addEventListener("load",post);post();})()</script></body></html>`;
-}
-
-function Frame({ html, height, id, max }: { html: string; height?: number; id: string; max: number }) {
-  const [measured, setMeasured] = useState<number>();
-  const doc = useMemo(() => frameDoc(html, id), [html, id]);
-  useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      if (e.data?.tackFrame === id && typeof e.data.height === "number") setMeasured(e.data.height);
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [id]);
-  const h = Math.min(max, Math.max(60, height ?? measured ?? 160));
-  return <iframe title="visual" sandbox="allow-scripts" srcDoc={doc} style={{ height: h }} className="block w-full border-0" />;
-}
-
-export function Visual({ tool }: { tool: Tool }) {
-  const input = (tool.input ?? {}) as { title?: string; html?: string; height?: number };
-  const [full, setFull] = useState(false);
-  const frameKey = useRef(crypto.randomUUID()).current;
-  useEffect(() => {
-    if (!full) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setFull(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [full]);
-  if (!input.html) {
-    return (
-      <div className="my-3 flex h-24 items-center justify-center gap-2.5 rounded-xl border border-line/70 text-[13px] text-faint">
-        <span className="pulse size-1.5 rounded-full bg-brass" />
-        Drawing{input.title ? ` ${input.title.toLowerCase()}` : ""}…
-      </div>
-    );
-  }
-  return (
-    <figure className="group my-3">
-      <figcaption className="mb-1.5 flex h-6 items-center gap-2 text-[12.5px] text-faint">
-        <span className="truncate">{input.title}</span>
-        <button
-          onClick={() => setFull(true)}
-          title="Expand"
-          className="ml-auto flex size-6 items-center justify-center rounded-md opacity-0 transition hover:bg-hover hover:text-ink group-hover:opacity-100"
-        >
-          <Maximize2 size={12} />
-        </button>
-      </figcaption>
-      <div className="overflow-hidden rounded-xl border border-line/70 p-4">
-        <Frame html={input.html} height={input.height} id={frameKey} max={1200} />
-      </div>
-      {full && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-canvas/95 p-8 backdrop-blur-sm" onClick={() => setFull(false)}>
-          <div className="mb-3 flex items-center text-[13px] text-dim">
-            {input.title}
-            <button title="Close (Esc)" className="ml-auto flex size-7 items-center justify-center rounded-md hover:bg-hover hover:text-ink">
-              <X size={15} />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-line p-6" onClick={(e) => e.stopPropagation()}>
-            <Frame html={input.html} id={`${frameKey}-full`} max={100_000} />
-          </div>
-        </div>
-      )}
-    </figure>
-  );
-}
 
 // ---- ask
 
@@ -117,28 +38,53 @@ export function Asked({ tool }: { tool: Tool }) {
 
 // ---- agent
 
-// One row per sub-agent: who, on what, how far along. Opens its thread.
+type AgentStatus = NonNullable<Thread["agent"]>["status"];
+type AgentResult = { id?: string; threadId?: string; name?: string; model?: string; status?: AgentStatus; error?: string; started?: boolean };
+
+function agentResult(output?: string): AgentResult {
+  if (!output) return {};
+  try {
+    const value: unknown = JSON.parse(output);
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const result = value as Record<string, unknown>;
+      return {
+        id: typeof result.id === "string" ? result.id : undefined,
+        threadId: typeof result.threadId === "string" ? result.threadId : undefined,
+        name: typeof result.name === "string" ? result.name : undefined,
+        model: typeof result.model === "string" ? result.model : undefined,
+        status: ["running", "waiting", "cancelling", "completed", "failed", "cancelled"].includes(String(result.status)) ? result.status as AgentStatus : undefined,
+        error: typeof result.error === "string" ? result.error : undefined,
+        started: typeof result.started === "boolean" ? result.started : undefined,
+      };
+    }
+  } catch { /* Earlier transcripts used plain-text agent results. */ }
+  const legacy = /^(?:Agent|Started) "(.+?)"/.exec(output);
+  const id = legacy ? /\(id\s+([\w-]+)/.exec(output)?.[1] : undefined;
+  if (legacy) return { id, name: legacy[1] };
+  return { error: output.replace(/^(?:Not started|Error):\s*/, ""), started: false };
+}
+
+// One row per sub-agent: who, on what, and whether it is running or needs the user.
 export function AgentCard({ tool, threadId }: { tool: Tool; threadId: string }) {
   const input = (tool.input ?? {}) as { name?: string; task?: string; model?: string };
-  const title = tool.output?.match(/^Started "(.+?)"/)?.[1];
-  const child = useApp((s) => (title ? Object.values(s.threads).find((t) => t.parentId === threadId && t.title === title) : undefined));
-  const label = useApp((s) => s.models.find((m) => m.value === child?.model)?.label ?? child?.model);
-  const approval = useApp((s) => !!child && Object.values(s.approvals).some((a) => a.threadId === child.id));
+  const result = agentResult(tool.output);
+  const id = result.threadId ?? result.id;
+  const child = useApp((s) => {
+    const candidate = id ? s.threads[id] : result.name ? Object.values(s.threads).find((t) => t.parentId === threadId && t.title === result.name) : undefined;
+    return candidate?.parentId === threadId ? candidate : undefined;
+  });
+  const model = child?.model ?? result.model ?? input.model;
+  const label = useApp((s) => s.models.find((m) => m.value === model)?.label ?? model);
+  const needsUser = useApp((s) => !!child && (
+    Object.values(s.approvals).some((a) => isThreadDescendant(s.threads, a.threadId, child.id)) ||
+    Object.values(s.threads).some((t) => t.questions?.length && isThreadDescendant(s.threads, t.id, child.id))
+  ));
 
-  if (tool.output && !title) {
-    return <p className="my-2 text-[13px] text-faint">Agent not started: {tool.output.replace(/^Not started: /, "")}</p>;
+  if (result.error || result.started === false) {
+    return <p className="my-2 text-[13px] text-danger">Agent not started: {result.error ?? "The request was declined."}</p>;
   }
-  const todos = child?.todos ?? [];
-  const done = todos.filter((t) => t.status === "completed").length;
-  const state = !child
-    ? "starting"
-    : approval || child.questions?.length
-      ? "waiting"
-      : child.status === "running"
-        ? "running"
-        : child.status === "error"
-          ? "failed"
-          : "done";
+  const status = child?.agent?.status ?? result.status ?? (child?.status === "running" ? "running" : child?.status === "error" ? "failed" : child ? "completed" : "starting");
+  const state = needsUser && (status === "running" || status === "waiting") ? "waiting" : status;
 
   return (
     <button
@@ -148,23 +94,26 @@ export function AgentCard({ tool, threadId }: { tool: Tool; threadId: string }) 
       className="group my-1.5 flex w-full items-center gap-3 rounded-xl border border-line/70 px-3.5 py-2 text-left transition-colors enabled:hover:bg-hover/50"
     >
       <span className="flex size-4 shrink-0 items-center justify-center">
-        {state === "running" || state === "starting" ? (
+        {state === "running" || state === "starting" || state === "cancelling" ? (
           <span className="spin size-3 rounded-full border-[1.5px] border-line border-t-brass" />
-        ) : state === "done" ? (
+        ) : state === "completed" ? (
           <Check size={14} className="text-ok/80" />
         ) : state === "failed" ? (
           <X size={14} className="text-danger" />
+        ) : state === "cancelled" ? (
+          <Ban size={14} className="text-faint" />
         ) : (
           <span className="pulse size-2 rounded-full bg-brass" />
         )}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[13.5px] text-ink">{child?.title ?? input.name ?? "Agent"}</span>
+      <span className="min-w-0 flex-1 truncate text-[13.5px] text-ink">{child?.title ?? result.name ?? input.name ?? "Agent"}</span>
       <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-faint">
         {state === "waiting" && <span className="text-brass">Needs you</span>}
         {state === "failed" && <span className="text-danger">Failed</span>}
-        {todos.length > 0 && state === "running" && <span className="tabular-nums">{done}/{todos.length}</span>}
+        {state === "cancelling" && <span>Stopping…</span>}
+        {state === "cancelled" && <span>Cancelled</span>}
         {child && <ProviderLogo provider={child.provider} className="size-3" />}
-        {label ?? input.model}
+        {label}
         <ChevronRight size={13} className="opacity-0 transition-opacity group-hover:opacity-100" />
       </span>
     </button>

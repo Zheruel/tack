@@ -1,8 +1,7 @@
 // The thread details card at the top right, modeled on T3 Code's: where the work happens
-// (project, editor), what it produced (branch, PRs and their CI, uncommitted changes) and the
+// (project), what it produced (branch, PRs and their CI, uncommitted changes) and the
 // sub-agents working on it (lineage). Toggled from the header.
 
-import * as Menu from "@radix-ui/react-dropdown-menu";
 import {
   Bot,
   ChevronDown,
@@ -10,14 +9,12 @@ import {
   CircleDot,
   CircleX,
   CornerLeftUp,
-  FileDiff,
   Folder,
   GitBranch,
   GitMerge,
   GitPullRequestArrow,
   GitPullRequestClosed,
   GitPullRequestDraft,
-  SquareArrowOutUpRight,
   Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -28,6 +25,7 @@ import { call } from "../rpc";
 import { loadPrs, openThread, useApp } from "../store";
 import { MenuContent, MenuItem } from "./Composer";
 import { ProviderLogo } from "./Logos";
+import { isThreadDescendant } from "./Approvals";
 
 const REFRESH_MS = 30_000;
 // Beside the chat only when the transcript column (720px) keeps its width with a card on each side.
@@ -40,9 +38,9 @@ export function ThreadDetails({ threadId }: { threadId: string }) {
   const thread = useApp((s) => s.threads[threadId])!;
   const fit = useApp((s) => s.detailsFit);
   const open = useApp((s) => (s.detailsFit ? s.details : s.detailsPeek));
-  const git = useGit(thread.projectId, thread.status);
-  const card = useRef<HTMLElement>(null);
+  const git = useGit(threadId, thread.projectId, thread.status, thread.workspace?.path);
   usePrs(threadId, thread.status);
+  const card = useRef<HTMLElement>(null);
   useFit();
 
   // Over the chat it closes like a popover: Esc, or a click outside.
@@ -73,7 +71,7 @@ export function ThreadDetails({ threadId }: { threadId: string }) {
       className="dock-in absolute top-[50px] right-3 z-20 flex max-h-[calc(100%-180px)] w-[280px] flex-col overflow-y-auto rounded-2xl border border-white/10 bg-raised/95 shadow-[0_18px_44px_-18px_rgb(0_0_0/80%)] backdrop-blur-xl"
     >
       <Workspace thread={thread} />
-      <VersionControl threadId={threadId} git={git} />
+      <VersionControl threadId={threadId} git={git} branch={thread.workspace?.branch} />
       <Lineage thread={thread} />
     </aside>
   );
@@ -97,81 +95,34 @@ function Section({ title, action, children }: { title?: React.ReactNode; action?
 
 function Workspace({ thread }: { thread: Thread }) {
   const project = useApp((s) => s.projects.find((p) => p.id === thread.projectId));
-  const editors = useEditors();
-  const [preferred, setPreferred] = useState(() => localStorage.getItem("tack.editor") ?? "");
   if (!project) return null;
-  const editor = editors.includes(preferred) ? preferred : editors[0];
-  const openIn = (name: string) => {
-    localStorage.setItem("tack.editor", name);
-    setPreferred(name);
-    call("editor.open", { projectId: project.id, editor: name });
-  };
+  const path = thread.workspace?.path ?? project.path;
   return (
     <Section>
-      <button onClick={() => call("project.reveal", { projectId: project.id })} title={`${project.path}\nShow in Finder`} className={`${ROW} ${HOVER}`}>
+      <button onClick={() => call("project.reveal", { projectId: project.id, threadId: thread.id })} title={`${path}\nShow in Finder`} className={`${ROW} ${HOVER}`}>
         <Folder className={ICON} />
         <span className="min-w-0 flex-1 truncate">{project.name}</span>
+        {thread.workspace?.kind === "worktree" && <span className="text-[11.5px] text-faint">Worktree</span>}
       </button>
-      {editor && (
-        <div className={`group/split flex items-center rounded-lg ${HOVER}`}>
-          <button onClick={() => openIn(editor)} className={`${ROW} flex-1 rounded-e-none`}>
-            <SquareArrowOutUpRight className={ICON} />
-            <span className="min-w-0 truncate">Open in {editor}</span>
-          </button>
-          {editors.length > 1 && (
-            <>
-              <span className="h-4 w-px shrink-0 bg-transparent group-hover/split:bg-line/65" />
-              <Menu.Root>
-                <Menu.Trigger className="flex h-8 w-8 shrink-0 items-center justify-center rounded-e-lg text-faint outline-none hover:text-dim">
-                  <ChevronDown size={14} />
-                </Menu.Trigger>
-                <MenuContent side="bottom">
-                  {editors.map((name) => (
-                    <MenuItem key={name} selected={name === editor} label={name} onSelect={() => openIn(name)} />
-                  ))}
-                </MenuContent>
-              </Menu.Root>
-            </>
-          )}
-        </div>
-      )}
     </Section>
   );
 }
 
-let editorList: Promise<string[]> | undefined;
-function useEditors(): string[] {
-  const [list, setList] = useState<string[]>([]);
-  useEffect(() => {
-    editorList ??= call("editors.list", {}).catch(() => []);
-    editorList.then(setList);
-  }, []);
-  return list;
-}
-
 // ---- version control
 
-function VersionControl({ threadId, git }: { threadId: string; git?: GitInfo }) {
+function VersionControl({ threadId, git, branch }: { threadId: string; git?: GitInfo; branch?: string }) {
   const prs = useApp((s) => s.prs[threadId]) ?? NO_PRS;
-  if (!git?.branch) return null;
-  const { additions, deletions } = git.changes;
+  const currentBranch = git?.branch ?? branch;
+  if (!currentBranch) return null;
   return (
     <Section>
       <div className={ROW} title="Current branch">
         <GitBranch className={ICON} />
-        <span className="min-w-0 flex-1 truncate">{git.branch}</span>
+        <span className="min-w-0 flex-1 truncate">{currentBranch}</span>
       </div>
       {prs.map((pr) => (
         <PrRow key={pr.url} pr={pr} />
       ))}
-      <div className={ROW} title={`${git.changes.files} uncommitted ${git.changes.files === 1 ? "file" : "files"}`}>
-        <FileDiff className={ICON} />
-        <span className="flex-1">Changes</span>
-        <span className="font-mono text-[12px] tabular-nums">
-          <span className={additions ? "text-ok" : "text-faint"}>+{additions.toLocaleString()}</span>{" "}
-          <span className={deletions ? "text-danger/90" : "text-faint"}>−{deletions.toLocaleString()}</span>
-        </span>
-      </div>
     </Section>
   );
 }
@@ -197,10 +148,10 @@ function PrRow({ pr }: { pr: PullRequest }) {
   const state = prState(pr);
   const checks = pr.checks && pr.state === "OPEN" ? CHECKS[pr.checks] : undefined;
   return (
-    <button onClick={() => openExternal(pr.url)} title={`${state.label}: ${pr.title}\nOpen on GitHub`} className={`w-full rounded-lg px-2.5 py-1.5 text-left ${HOVER}`}>
+    <button onClick={() => openExternal(pr.url)} title={`${state.label}: ${pr.title}\nOpen on GitHub`} className="group/pr w-full cursor-pointer rounded-lg px-2.5 py-1.5 text-left">
       <span className="flex gap-2.5">
         <state.icon className={`mt-px size-4 shrink-0 ${state.color}`} />
-        <span className="line-clamp-2 min-w-0 text-[13px] leading-[18px] font-medium text-ink/85">{pr.title}</span>
+        <span className="line-clamp-2 min-w-0 text-[13px] leading-[18px] font-medium text-ink/85 decoration-ink/60 underline-offset-2 group-hover/pr:underline">{pr.title}</span>
       </span>
       <span className="mt-0.5 flex h-5 items-center gap-2 ps-[26px] text-[12px] text-faint tabular-nums">
         #{pr.number}
@@ -221,18 +172,26 @@ function PrRow({ pr }: { pr: PullRequest }) {
 
 // ---- lineage
 
+function agentStatus(thread: Thread): NonNullable<Thread["agent"]>["status"] {
+  return thread.agent?.status ?? (thread.status === "running" ? "running" : thread.status === "error" ? "failed" : "completed");
+}
+
+function agentActive(thread: Thread): boolean {
+  return ["running", "waiting", "cancelling"].includes(agentStatus(thread));
+}
+
 function Lineage({ thread }: { thread: Thread }) {
   const parent = useApp((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
   const children = useApp(useShallow((s) => Object.values(s.threads).filter((t) => t.parentId === thread.id)));
   const [showPrevious, setShowPrevious] = useState(false);
-  const active = children.filter((t) => t.status === "running").sort((a, b) => a.createdAt - b.createdAt);
-  const previous = children.filter((t) => t.status !== "running").sort((a, b) => b.updatedAt - a.updatedAt);
-  const failed = previous.filter((t) => t.status === "error").length;
+  const active = children.filter(agentActive).sort((a, b) => a.createdAt - b.createdAt);
+  const previous = children.filter((t) => !agentActive(t)).sort((a, b) => b.updatedAt - a.updatedAt);
+  const failed = previous.filter((t) => agentStatus(t) === "failed").length;
   const now = useNow(active.length > 0);
   if (!parent && !children.length) return null;
 
   return (
-    <Section title={active.length ? `Lineage · ${active.length} running` : "Lineage"}>
+    <Section title={active.length ? `Lineage · ${active.length} active` : "Lineage"}>
       <ul className="max-h-[13.5rem] overflow-y-auto">
         {parent && (
           <li>
@@ -264,12 +223,17 @@ function Lineage({ thread }: { thread: Thread }) {
 }
 
 function AgentRow({ thread, now }: { thread: Thread; now: number }) {
-  const running = thread.status === "running";
-  const waiting = useApp(
-    (s) => !!thread.questions?.length || Object.values(s.approvals).some((a) => a.threadId === thread.id),
+  const status = agentStatus(thread);
+  const active = agentActive(thread);
+  const stopping = status === "cancelling";
+  const needsUser = useApp((s) =>
+    Object.values(s.threads).some((t) => t.questions?.length && isThreadDescendant(s.threads, t.id, thread.id)) ||
+    Object.values(s.approvals).some((a) => isThreadDescendant(s.threads, a.threadId, thread.id)),
   );
-  const dot = waiting ? "bg-brass" : running ? "bg-sky-400" : thread.status === "error" ? "bg-danger" : "bg-ok";
-  const elapsed = (running ? now : thread.updatedAt) - thread.createdAt;
+  const waiting = status === "waiting" || (status === "running" && needsUser);
+  const dot = stopping || status === "cancelled" ? "bg-faint" : waiting ? "bg-brass" : status === "running" ? "bg-sky-400" : status === "failed" ? "bg-danger" : "bg-ok";
+  const elapsed = (active ? now : thread.updatedAt) - thread.createdAt;
+  const label = stopping ? "Stopping…" : waiting ? "Needs you" : status === "failed" ? "Failed" : status === "cancelled" ? "Cancelled" : duration(elapsed);
   return (
     <li className="group relative">
       <button onClick={() => openThread(thread.id)} title={`${thread.title} · ${thread.model}`} className={`${ROW} ${HOVER}`}>
@@ -278,15 +242,17 @@ function AgentRow({ thread, now }: { thread: Thread; now: number }) {
           <span className={`absolute -right-1 -bottom-1 size-2 rounded-full border-2 border-raised ${dot}`} />
         </span>
         <span className="min-w-0 flex-1 truncate text-ink/85">{thread.title}</span>
-        <span className={`text-[11.5px] tabular-nums transition-opacity ${running ? "group-hover:opacity-0" : ""} ${thread.status === "error" ? "text-danger" : "text-faint"}`}>
-          {waiting ? "Needs you" : thread.status === "error" ? "Failed" : duration(elapsed)}
+        <span className={`text-[11.5px] tabular-nums transition-opacity ${active ? "group-hover:opacity-0" : ""} ${status === "failed" ? "text-danger" : "text-faint"}`}>
+          {label}
         </span>
       </button>
-      {running && (
+      {active && (
         <button
+          disabled={stopping}
           onClick={() => call("chat.interrupt", { threadId: thread.id })}
           title="Stop agent"
-          className="absolute top-1 right-1 flex size-6 items-center justify-center rounded-md text-danger opacity-0 transition-opacity group-hover:opacity-100 hover:bg-danger/10"
+          aria-label={`Stop ${thread.title}`}
+          className="absolute top-1 right-1 flex size-6 items-center justify-center rounded-md text-danger opacity-0 transition-opacity group-hover:opacity-100 enabled:hover:bg-danger/10 disabled:opacity-40"
         >
           <Square size={11} fill="currentColor" />
         </button>
@@ -318,7 +284,7 @@ function useNow(ticking: boolean) {
 
 function useFit() {
   useEffect(() => {
-    const main = document.querySelector("main");
+    const main = document.querySelector(".thread-chat");
     if (!main) return;
     const observer = new ResizeObserver(([e]) => {
       const fit = e!.contentRect.width >= FIT_WIDTH;
@@ -344,10 +310,24 @@ function useRefresh(load: () => void, deps: unknown[], status: string) {
   }, [...deps, status]);
 }
 
-function useGit(projectId: string, status: string): GitInfo | undefined {
-  const [info, setInfo] = useState<{ projectId: string; git: GitInfo }>();
-  useRefresh(() => void call("git.info", { projectId }).then((git) => setInfo({ projectId, git })), [projectId], status);
-  return info?.projectId === projectId ? info.git : undefined;
+function useGit(threadId: string, projectId: string, status: string, workspacePath?: string): GitInfo | undefined {
+  const [info, setInfo] = useState<{ threadId: string; workspacePath?: string; git: GitInfo }>();
+  useEffect(() => {
+    let current = true;
+    const load = () => void call("git.info", { projectId, threadId }).then((git) => {
+      if (current) setInfo({ threadId, workspacePath, git });
+    }).catch(() => {});
+    load();
+    if (status === "running") return () => { current = false; };
+    const timer = setInterval(() => document.hasFocus() && load(), REFRESH_MS);
+    window.addEventListener("focus", load);
+    return () => {
+      current = false;
+      clearInterval(timer);
+      window.removeEventListener("focus", load);
+    };
+  }, [threadId, projectId, status, workspacePath]);
+  return info?.threadId === threadId && info.workspacePath === workspacePath ? info.git : undefined;
 }
 
 function usePrs(threadId: string, status: string) {

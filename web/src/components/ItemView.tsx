@@ -3,8 +3,9 @@ import { Check, ChevronRight, Copy, Image as ImageIcon, Paperclip } from "lucide
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { Streamdown } from "streamdown";
-import type { Item } from "../../../shared/protocol";
-import { useApp } from "../store";
+import { wrapUpOf, type Item } from "../../../shared/protocol";
+import { call } from "../rpc";
+import { suggestReply, useApp } from "../store";
 import { ProviderLogo } from "./Logos";
 import { AgentCard, Asked, tackTool, Visual } from "./TackTools";
 
@@ -27,7 +28,8 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
     case "tool": {
       const own = tackTool(item.name); // the rest render inside <Steps>
       if (own === "agent") return <AgentCard tool={item} threadId={threadId} />;
-      return own === "show" ? <Visual tool={item} /> : own === "ask" ? <Asked tool={item} /> : null;
+      if (own === "wrap_up") return <Closing threadId={threadId} item={item} />;
+      return own === "show" ? <Visual tool={item} threadId={threadId} /> : own === "ask" ? <Asked tool={item} /> : null;
     }
     case "error":
       return (
@@ -38,6 +40,57 @@ export function ItemView({ threadId, item, streaming }: { threadId: string; item
     default:
       return null; // tools and thinking render inside <Steps>
   }
+}
+
+// A `wrap_up` call: the agent's closing message, what it left unverified, and buttons for its
+// suggested next moves. Suggestions fill the composer for review and preserve existing text.
+function Closing({ threadId, item }: { threadId: string; item: Tool }) {
+  const wrap = wrapUpOf(item);
+  const live = useApp((s) => {
+    const t = s.transcripts[threadId];
+    const thread = s.threads[threadId];
+    if (!t || item.status !== "ok" || thread?.status !== "idle" || thread.parentId || thread.questions?.length || s.queues[threadId]?.length) return false;
+    const index = t.order.indexOf(item.id);
+    if (index < 0) return false;
+    return t.order.slice(index + 1).every((id) => {
+      const next = t.byId[id];
+      return next?.kind !== "user" && (!next || !wrapUpOf(next));
+    });
+  });
+  if (!wrap) return null;
+  const next = wrap.next ?? [];
+  return (
+    <div>
+      <Markdown text={wrap.summary} streaming={item.status === "running"} />
+      {wrap.unverified && (
+        <p className="selectable my-1 border-l-2 border-brass/35 pl-3 text-[13px] leading-relaxed text-dim">
+          <span className="text-faint">Not verified: </span>{wrap.unverified}
+        </p>
+      )}
+      {item.status === "error" && <p className="text-[13px] text-danger">This wrap-up did not finish.</p>}
+      {live && next.length > 0 && (
+        <div className="pt-3 pb-1">
+          <p className="mb-2 text-[12px] text-faint">Suggested next steps · edit before sending</p>
+          <div className="flex flex-wrap gap-2">
+            {next.map((n, i) => (
+              <button
+                key={n.message}
+                type="button"
+                title={n.message}
+                aria-label={`Edit suggested request: ${n.label}`}
+                onClick={() => suggestReply(threadId, n.message)}
+                className={`min-h-8 max-w-full cursor-pointer rounded-full border px-3 py-1.5 text-left text-[13px] leading-snug transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass ${
+                  i === 0 ? "border-brass/35 text-brass hover:bg-brass/10" : "border-line text-dim hover:bg-hover hover:text-ink"
+                }`}
+              >
+                {n.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Markdown({ text, streaming }: { text: string; streaming: boolean }) {
@@ -443,10 +496,6 @@ function present(tool: Tool, live = false): { verb: string; target?: string } {
       return { verb: v("Fetching", "Fetched"), target: input.url };
     case "WebSearch":
       return { verb: v("Searching the web", "Searched the web"), target: input.query };
-    case "TodoWrite":
-      return { verb: v("Updating the plan", "Updated the plan") };
-    case "update_plan":
-      return { verb: v("Updating the plan", "Updated the plan") };
     case "Task":
     case "Agent":
       return { verb: v("Delegating", "Delegated"), target: input.description };
@@ -506,6 +555,7 @@ function TurnEnd({ threadId, item }: { threadId: string; item: Of<"turn"> }) {
       const it = t.byId[t.order[i]!]!;
       if (it.kind === "user" || it.kind === "turn") break;
       if (it.kind === "assistant") parts.unshift(it.text);
+      else if (wrapUpOf(it)) parts.unshift(wrapUpOf(it)!.summary);
     }
     navigator.clipboard.writeText(parts.join("\n\n"));
     setCopied(true);
